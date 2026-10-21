@@ -1,0 +1,113 @@
+name: "FAP: Build for multiple SDK sources"
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  schedule:
+    # Daily build at 01:00 UTC
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  ufbt-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: dev channel
+            sdk-channel: dev
+          - name: release channel
+            sdk-channel: release
+    name: 'ufbt: Build for ${{ matrix.name }}'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with ufbt
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        id: build-app
+        with:
+          sdk-channel: ${{ matrix.sdk-channel }}
+
+      - name: Upload app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitlocker_key_manager-${{ steps.build-app.outputs.suffix }}
+          path: ${{ steps.build-app.outputs.fap-artifacts }}
+          if-no-files-found: error
+          retention-days: 30
+
+  ufbt-lint:
+    runs-on: ubuntu-latest
+    name: 'ufbt: Lint sources'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup ufbt
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        id: setup-ufbt
+        with:
+          task: setup
+          sdk-channel: dev
+
+      - name: Lint sources
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        with:
+          skip-setup: true
+          task: lint
+
+  release:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [ufbt-build, ufbt-lint]
+    runs-on: ubuntu-latest
+    name: 'Create Release'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Get version from FAM
+        id: version
+        run: |
+          VERSION=$(grep -oP 'fap_version="\K[^"]+' application.fam)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Found version: $VERSION"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: "BitLocker Key Manager v${{ steps.version.outputs.version }}"
+          body: |
+            ## BitLocker Recovery Key Manager v${{ steps.version.outputs.version }}
+            
+            ### Build Info
+            - **Commit:** ${{ github.sha }}
+            - **Branch:** ${{ github.ref_name }}
+            - **Date:** ${{ github.event.head_commit.timestamp }}
+            
+            ### Installation
+            1. Download the `.fap` file matching your firmware version
+            2. Copy to your Flipper Zero SD card: `/ext/apps/Tools/`
+            3. Launch from Apps → Tools → BitLocker Key Mgr
+            
+            ### Files
+            - `*-dev-*.fap` — Built for dev/unleashed firmware
+            - `*-release-*.fap` — Built for official release firmware
+          files: artifacts/**/*.fap
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
-// Source code content (loaded from public directory)
+// ========================= Source Code Constants =========================
+
 const APPLICATION_FAM = `App(
     appid="bitlocker_key_manager",
     name="BitLocker Key Mgr",
@@ -16,31 +17,121 @@ const APPLICATION_FAM = `App(
     fap_version="1.0.0",
 )`
 
-function App() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'code' | 'install'>('overview')
-  const [activeFile, setActiveFile] = useState<'main' | 'fam'>('main')
-  const [copied, setCopied] = useState(false)
+const BUILD_YML = `name: "FAP: Build for multiple SDK sources"
 
-  const handleCopy = () => {
-    const code = activeFile === 'main' ? mainCode : APPLICATION_FAM
-    navigator.clipboard.writeText(code)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  schedule:
+    # Daily build at 01:00 UTC
+    - cron: "0 1 * * *"
+  workflow_dispatch:
 
-  const handleDownload = (filename: string, content: string) => {
-    const blob = new Blob([content], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }
+jobs:
+  ufbt-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: dev channel
+            sdk-channel: dev
+          - name: release channel
+            sdk-channel: release
+    name: 'ufbt: Build for \${{ matrix.name }}'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  const mainCode = `#include <furi.h>
+      - name: Build with ufbt
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        id: build-app
+        with:
+          sdk-channel: \${{ matrix.sdk-channel }}
+
+      - name: Upload app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitlocker_key_manager-\${{ steps.build-app.outputs.suffix }}
+          path: \${{ steps.build-app.outputs.fap-artifacts }}
+          if-no-files-found: error
+          retention-days: 30
+
+  ufbt-lint:
+    runs-on: ubuntu-latest
+    name: 'ufbt: Lint sources'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup ufbt
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        id: setup-ufbt
+        with:
+          task: setup
+          sdk-channel: dev
+
+      - name: Lint sources
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        with:
+          skip-setup: true
+          task: lint
+
+  release:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [ufbt-build, ufbt-lint]
+    runs-on: ubuntu-latest
+    name: 'Create Release'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Get version from FAM
+        id: version
+        run: |
+          VERSION=$(grep -oP 'fap_version="\\K[^"]+' application.fam)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Found version: $VERSION"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v\${{ steps.version.outputs.version }}
+          name: "BitLocker Key Manager v\${{ steps.version.outputs.version }}"
+          body: |
+            ## BitLocker Recovery Key Manager v\${{ steps.version.outputs.version }}
+            
+            ### Build Info
+            - **Commit:** \${{ github.sha }}
+            - **Branch:** \${{ github.ref_name }}
+            - **Date:** \${{ github.event.head_commit.timestamp }}
+            
+            ### Installation
+            1. Download the .fap file matching your firmware version
+            2. Copy to your Flipper Zero SD card: /ext/apps/Tools/
+            3. Launch from Apps → Tools → BitLocker Key Mgr
+            
+            ### Files
+            - *-dev-*.fap — Built for dev/unleashed firmware
+            - *-release-*.fap — Built for official release firmware
+          files: artifacts/**/*.fap
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}`
+
+const MAIN_C_CODE = `#include <furi.h>
 #include <gui/gui.h>
 #include <gui/scene_manager.h>
 #include <gui/view_dispatcher.h>
@@ -155,7 +246,6 @@ static void hid_press_key(uint8_t key_code) {
 }
 
 static void hid_type_digit_digits_mode(char digit) {
-    // Type digit using number keys
     uint8_t idx = digit - '0';
     if(idx < 10) {
         hid_press_key(hid_digit_codes[idx]);
@@ -163,7 +253,6 @@ static void hid_type_digit_digits_mode(char digit) {
 }
 
 static void hid_type_digit_fkey_mode(char digit) {
-    // Type digit using function keys: F1=1, F2=2, ..., F9=9, F10=0
     uint8_t idx = digit - '0';
     uint8_t fkey_idx;
     if(idx == 0) {
@@ -212,8 +301,6 @@ static bool save_key_to_file(const char* filename, const char* key_data) {
     storage_file_free(file);
     furi_string_free(file_path);
     furi_record_close(RECORD_STORAGE);
-
-    FURI_LOG_I(TAG, "Save key: %s, success: %d", filename, success);
     return success;
 }
 
@@ -228,7 +315,6 @@ static bool read_key_from_file(const char* filepath, char* buffer,
                                                  buffer_size - 1);
         if(bytes_read > 0) {
             buffer[bytes_read] = '\\0';
-            // Trim whitespace
             for(int i = bytes_read - 1; i >= 0; i--) {
                 if(buffer[i] == '\\n' || buffer[i] == '\\r' ||
                    buffer[i] == ' ') {
@@ -247,7 +333,7 @@ static bool read_key_from_file(const char* filepath, char* buffer,
     return success;
 }
 
-/* ========================= Key Input Validation ========================= */
+/* ========================= Key Validation ========================= */
 
 static bool validate_recovery_key(const char* key) {
     int digit_count = 0;
@@ -282,17 +368,14 @@ static void input_recovery_key(BitLockerApp* app) {
         return;
     }
 
-    // Start USB HID
     furi_hal_usb_set_config(&usb_hid, NULL);
-    furi_delay_ms(1000); // Wait for USB enumeration
+    furi_delay_ms(1000);
 
     for(int i = 0; key[i] != '\\0'; i++) {
         if(key[i] == '-') {
-            // Type hyphen
             hid_type_hyphen();
             furi_delay_ms(GROUP_DELAY_MS);
         } else {
-            // Type digit based on mode
             if(app->input_mode == InputModeDigits) {
                 hid_type_digit_digits_mode(key[i]);
             } else {
@@ -301,10 +384,8 @@ static void input_recovery_key(BitLockerApp* app) {
         }
     }
 
-    // Press Enter at the end
     furi_delay_ms(100);
     hid_type_enter();
-
     FURI_LOG_I(TAG, "Key input complete");
 }
 
@@ -313,13 +394,13 @@ static void input_recovery_key(BitLockerApp* app) {
 static void scene_main_menu_callback(void* context, uint32_t index) {
     BitLockerApp* app = context;
     switch(index) {
-    case 0: // Save Key
+    case 0:
         scene_manager_next_scene(app->scene_manager, SceneSaveKey);
         break;
-    case 1: // Input Key
+    case 1:
         scene_manager_next_scene(app->scene_manager, SceneFileSelect);
         break;
-    case 2: // Settings
+    case 2:
         scene_manager_next_scene(app->scene_manager, SceneSettings);
         break;
     }
@@ -362,88 +443,68 @@ static void scene_settings_change_callback(void* context, uint32_t index) {
 
 static void scene_main_menu_on_enter(void* context) {
     BitLockerApp* app = context;
-    Submenu* submenu = app->submenu;
-
-    submenu_reset(submenu);
-    submenu_set_header(submenu, "BitLocker Key Mgr", 64, 2,
+    submenu_reset(app->submenu);
+    submenu_set_header(app->submenu, "BitLocker Key Mgr", 64, 2,
                        AlignCenter, AlignTop);
-    submenu_add_item(submenu, "Save Recovery Key", 0,
+    submenu_add_item(app->submenu, "Save Recovery Key", 0,
                      scene_main_menu_callback, app);
-    submenu_add_item(submenu, "Input Recovery Key", 1,
+    submenu_add_item(app->submenu, "Input Recovery Key", 1,
                      scene_main_menu_callback, app);
-    submenu_add_item(submenu, "Settings", 2,
+    submenu_add_item(app->submenu, "Settings", 2,
                      scene_main_menu_callback, app);
-
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewSubmenu);
 }
 
-static bool scene_main_menu_on_event(void* context, SceneManagerEvent event) {
-    UNUSED(context);
-    UNUSED(event);
-    return false;
+static bool scene_main_menu_on_event(void* c, SceneManagerEvent e) {
+    UNUSED(c); UNUSED(e); return false;
 }
 
 static void scene_main_menu_on_exit(void* context) {
-    BitLockerApp* app = context;
-    submenu_reset(app->submenu);
+    submenu_reset(((BitLockerApp*)context)->submenu);
 }
 
 static void scene_save_key_on_enter(void* context) {
     BitLockerApp* app = context;
-    TextInput* text_input = app->text_input;
-
-    text_input_reset(text_input);
-    text_input_set_header_text(text_input,
+    text_input_reset(app->text_input);
+    text_input_set_header_text(app->text_input,
         "Enter 48-digit key\\n(XXXXXX-XXXXXX-...)");
-    text_input_set_result_callback(text_input, scene_save_key_callback,
-        app, app->key_buffer, RECOVERY_KEY_LEN, true);
-
+    text_input_set_result_callback(app->text_input,
+        scene_save_key_callback, app, app->key_buffer,
+        RECOVERY_KEY_LEN, true);
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewTextInput);
 }
 
-static bool scene_save_key_on_event(void* context, SceneManagerEvent event) {
-    UNUSED(context);
-    UNUSED(event);
-    return false;
+static bool scene_save_key_on_event(void* c, SceneManagerEvent e) {
+    UNUSED(c); UNUSED(e); return false;
 }
 
 static void scene_save_key_on_exit(void* context) {
-    BitLockerApp* app = context;
-    text_input_reset(app->text_input);
+    text_input_reset(((BitLockerApp*)context)->text_input);
 }
 
 static void scene_settings_on_enter(void* context) {
     BitLockerApp* app = context;
-    VariableItemList* list = app->settings_list;
-
-    variable_item_list_reset(list);
-
-    VariableItem* item = variable_item_list_add(list, "Input Mode", 2,
-        scene_settings_change_callback, app);
+    variable_item_list_reset(app->settings_list);
+    VariableItem* item = variable_item_list_add(app->settings_list,
+        "Input Mode", 2, scene_settings_change_callback, app);
     variable_item_set_current_value_index(item, (uint8_t)app->input_mode);
     variable_item_set_current_value_text(item,
         app->input_mode == InputModeDigits ? "Digits" : "F-Keys");
-
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewSettings);
 }
 
-static bool scene_settings_on_event(void* context, SceneManagerEvent event) {
-    UNUSED(context);
-    UNUSED(event);
-    return false;
+static bool scene_settings_on_event(void* c, SceneManagerEvent e) {
+    UNUSED(c); UNUSED(e); return false;
 }
 
 static void scene_settings_on_exit(void* context) {
-    BitLockerApp* app = context;
-    variable_item_list_reset(app->settings_list);
+    variable_item_list_reset(((BitLockerApp*)context)->settings_list);
 }
 
 static void scene_file_select_on_enter(void* context) {
     BitLockerApp* app = context;
-    Submenu* submenu = app->submenu;
-
-    submenu_reset(submenu);
-    submenu_set_header(submenu, "Select Key File", 64, 2,
+    submenu_reset(app->submenu);
+    submenu_set_header(app->submenu, "Select Key File", 64, 2,
                        AlignCenter, AlignTop);
 
     Storage* storage = furi_record_open(RECORD_STORAGE);
@@ -457,7 +518,6 @@ static void scene_file_select_on_enter(void* context) {
         while(storage_dir_read(dir, &file_info,
                furi_string_get_ansi(filename), 255)) {
             if(file_info.flags & FSF_DIRECTORY) continue;
-            
             size_t name_len = furi_string_size(filename);
             size_t ext_len = strlen(KEY_FILE_EXT);
             if(name_len > ext_len) {
@@ -465,20 +525,18 @@ static void scene_file_select_on_enter(void* context) {
                 if(strcmp(name_str + name_len - ext_len, KEY_FILE_EXT) == 0) {
                     furi_string_printf(app->selected_file_path,
                         "%s/%s", STORAGE_PATH, name_str);
-                    submenu_add_item(submenu, name_str, item_index,
+                    submenu_add_item(app->submenu, name_str, item_index,
                         scene_main_menu_callback, app);
                     item_index++;
                 }
             }
         }
-
         furi_string_free(filename);
         storage_dir_close(dir);
     }
 
     storage_file_free(dir);
     furi_record_close(RECORD_STORAGE);
-
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewSubmenu);
 }
 
@@ -487,7 +545,6 @@ static bool scene_file_select_on_event(void* context, SceneManagerEvent event) {
     if(event.type == SceneManagerEventTypeCustom) {
         if(read_key_from_file(app->selected_file_path,
                app->key_buffer, RECOVERY_KEY_LEN)) {
-            // Start USB HID input
             furi_hal_usb_set_config(&usb_hid, NULL);
             furi_delay_ms(1000);
             input_recovery_key(app);
@@ -498,36 +555,35 @@ static bool scene_file_select_on_event(void* context, SceneManagerEvent event) {
 }
 
 static void scene_file_select_on_exit(void* context) {
-    BitLockerApp* app = context;
-    submenu_reset(app->submenu);
+    submenu_reset(((BitLockerApp*)context)->submenu);
 }
 
 static void scene_input_progress_on_enter(void* context) {
     BitLockerApp* app = context;
-    Popup* popup = app->popup;
     uint32_t state = scene_manager_get_scene_state(
         app->scene_manager, SceneSaveKey);
-
-    popup_reset(popup);
+    popup_reset(app->popup);
 
     if(state == 0) {
-        popup_set_header(popup, "Saved!", 64, 20, AlignCenter, AlignTop);
-        popup_set_text(popup, "Key saved to SD card", 64, 36,
+        popup_set_header(app->popup, "Saved!", 64, 20,
+                         AlignCenter, AlignTop);
+        popup_set_text(app->popup, "Key saved to SD card", 64, 36,
                        AlignCenter, AlignTop);
     } else if(state == 1) {
-        popup_set_header(popup, "Error!", 64, 20, AlignCenter, AlignTop);
-        popup_set_text(popup, "Invalid key format\\nNeed 48 digits (6x8)",
+        popup_set_header(app->popup, "Error!", 64, 20,
+                         AlignCenter, AlignTop);
+        popup_set_text(app->popup, "Invalid key format\\nNeed 48 digits",
                        64, 36, AlignCenter, AlignTop);
     } else {
-        popup_set_header(popup, "Error!", 64, 20, AlignCenter, AlignTop);
-        popup_set_text(popup, "Failed to save file", 64, 36,
+        popup_set_header(app->popup, "Error!", 64, 20,
+                         AlignCenter, AlignTop);
+        popup_set_text(app->popup, "Failed to save file", 64, 36,
                        AlignCenter, AlignTop);
     }
 
-    popup_set_timeout(popup, 2000);
-    popup_set_timeout_enabled(popup);
-    popup_set_callback(popup, NULL);
-
+    popup_set_timeout(app->popup, 2000);
+    popup_set_timeout_enabled(app->popup);
+    popup_set_callback(app->popup, NULL);
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewPopup);
 }
 
@@ -543,8 +599,7 @@ static bool scene_input_progress_on_event(void* context,
 }
 
 static void scene_input_progress_on_exit(void* context) {
-    BitLockerApp* app = context;
-    popup_reset(app->popup);
+    popup_reset(((BitLockerApp*)context)->popup);
 }
 
 /* ========================= Scene Table ========================= */
@@ -574,11 +629,11 @@ static void (*const scene_on_exit_handlers[])(void*) = {
 };
 
 static const SceneManagerHandlers scene_handlers = {
-    .scene = {
-        {.on_enter_handlers = scene_on_enter_handlers,
-         .on_event_handlers = scene_on_event_handlers,
-         .on_exit_handlers = scene_on_exit_handlers},
-    },
+    .scene = {{
+        .on_enter_handlers = scene_on_enter_handlers,
+        .on_event_handlers = scene_on_event_handlers,
+        .on_exit_handlers = scene_on_exit_handlers,
+    }},
     .scene_num = SceneCount,
 };
 
@@ -586,16 +641,16 @@ static const SceneManagerHandlers scene_handlers = {
 
 static bool view_dispatcher_custom_callback(void* context,
                                             uint32_t custom_event) {
-    BitLockerApp* app = context;
-    return scene_manager_handle_custom_event(app->scene_manager, custom_event);
+    return scene_manager_handle_custom_event(
+        ((BitLockerApp*)context)->scene_manager, custom_event);
 }
 
 static bool view_dispatcher_navigation_callback(void* context) {
-    BitLockerApp* app = context;
-    return scene_manager_handle_back_event(app->scene_manager);
+    return scene_manager_handle_back_event(
+        ((BitLockerApp*)context)->scene_manager);
 }
 
-/* ========================= App Init / Free ========================= */
+/* ========================= App Lifecycle ========================= */
 
 static BitLockerApp* app_alloc(void) {
     BitLockerApp* app = malloc(sizeof(BitLockerApp));
@@ -611,15 +666,12 @@ static BitLockerApp* app_alloc(void) {
     app->submenu = submenu_alloc();
     view_dispatcher_add_view(app->view_dispatcher, ViewSubmenu,
         submenu_get_view(app->submenu));
-
     app->text_input = text_input_alloc();
     view_dispatcher_add_view(app->view_dispatcher, ViewTextInput,
         text_input_get_view(app->text_input));
-
     app->popup = popup_alloc();
     view_dispatcher_add_view(app->view_dispatcher, ViewPopup,
         popup_get_view(app->popup));
-
     app->settings_list = variable_item_list_alloc();
     view_dispatcher_add_view(app->view_dispatcher, ViewSettings,
         variable_item_list_get_view(app->settings_list));
@@ -638,12 +690,10 @@ static void app_free(BitLockerApp* app) {
     view_dispatcher_remove_view(app->view_dispatcher, ViewTextInput);
     view_dispatcher_remove_view(app->view_dispatcher, ViewPopup);
     view_dispatcher_remove_view(app->view_dispatcher, ViewSettings);
-
     submenu_free(app->submenu);
     text_input_free(app->text_input);
     popup_free(app->popup);
     variable_item_list_free(app->settings_list);
-
     view_dispatcher_free(app->view_dispatcher);
     scene_manager_free(app->scene_manager);
     free(app);
@@ -653,56 +703,105 @@ static void app_free(BitLockerApp* app) {
 
 int32_t bitlocker_key_manager_app(void* p) {
     UNUSED(p);
-
     BitLockerApp* app = app_alloc();
 
     Gui* gui = furi_record_open(RECORD_GUI);
     view_dispatcher_attach_to_gui(app->view_dispatcher, gui,
         ViewDispatcherTypeFullscreen);
-
     scene_manager_next_scene(app->scene_manager, SceneMainMenu);
     view_dispatcher_run(app->view_dispatcher);
 
     view_dispatcher_detach_from_gui(app->view_dispatcher);
     furi_record_close(RECORD_GUI);
-
     app_free(app);
     return 0;
 }`
+
+// ========================= Types =========================
+
+type FileId = 'main' | 'fam' | 'workflow'
+
+// ========================= App Component =========================
+
+function App() {
+  const [activeTab, setActiveTab] = useState<'overview' | 'code' | 'install' | 'ci'>('overview')
+  const [activeFile, setActiveFile] = useState<FileId>('main')
+  const [copied, setCopied] = useState(false)
+
+  const files: Record<FileId, { name: string; content: string }> = {
+    main: { name: 'bitlocker_key_manager.c', content: MAIN_C_CODE },
+    fam: { name: 'application.fam', content: APPLICATION_FAM },
+    workflow: { name: '.github/workflows/build.yml', content: BUILD_YML },
+  }
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(files[activeFile].content)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleDownload = (filename: string, content: string) => {
+    const blob = new Blob([content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  const handleDownloadAll = () => {
+    handleDownload('bitlocker_key_manager.c', MAIN_C_CODE)
+    setTimeout(() => handleDownload('application.fam', APPLICATION_FAM), 200)
+    setTimeout(() => handleDownload('build.yml', BUILD_YML), 400)
+  }
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
       {/* Header */}
       <header className="bg-gray-900 border-b border-orange-500/30">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-4">
-          <div className="w-12 h-12 bg-orange-500 rounded-lg flex items-center justify-center">
+          <div className="w-12 h-12 bg-orange-500 rounded-lg flex items-center justify-center shadow-lg shadow-orange-500/20">
             <svg viewBox="0 0 24 24" className="w-8 h-8 text-gray-900" fill="currentColor">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+              <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
             </svg>
           </div>
           <div>
             <h1 className="text-xl font-bold text-orange-400">BitLocker Key Manager</h1>
             <p className="text-sm text-gray-400">Flipper Zero Application v1.0.0</p>
           </div>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="px-2 py-1 bg-green-500/20 text-green-400 text-xs rounded-full border border-green-500/30">
+              ● CI/CD Ready
+            </span>
+            <span className="px-2 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-full border border-blue-500/30">
+              v1.0.0
+            </span>
+          </div>
         </div>
       </header>
 
       {/* Navigation */}
-      <nav className="bg-gray-900/50 border-b border-gray-800">
+      <nav className="bg-gray-900/50 border-b border-gray-800 sticky top-0 z-10 backdrop-blur-sm">
         <div className="max-w-6xl mx-auto px-4 flex gap-1">
-          {(['overview', 'code', 'install'] as const).map((tab) => (
+          {([
+            { id: 'overview', label: '📋 Overview' },
+            { id: 'code', label: '💻 Source Code' },
+            { id: 'install', label: '📦 Install Guide' },
+            { id: 'ci', label: '⚙️ CI/CD' },
+          ] as const).map((tab) => (
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
               className={`px-4 py-3 text-sm font-medium transition-colors border-b-2 ${
-                activeTab === tab
+                activeTab === tab.id
                   ? 'border-orange-500 text-orange-400'
                   : 'border-transparent text-gray-400 hover:text-gray-200'
               }`}
             >
-              {tab === 'overview' && '📋 Overview'}
-              {tab === 'code' && '💻 Source Code'}
-              {tab === 'install' && '📦 Install Guide'}
+              {tab.label}
             </button>
           ))}
         </div>
@@ -715,14 +814,20 @@ int32_t bitlocker_key_manager_app(void* p) {
           <CodeSection
             activeFile={activeFile}
             setActiveFile={setActiveFile}
-            mainCode={mainCode}
-            famCode={APPLICATION_FAM}
+            files={files}
             copied={copied}
             onCopy={handleCopy}
             onDownload={handleDownload}
+            onDownloadAll={handleDownloadAll}
           />
         )}
         {activeTab === 'install' && <InstallSection />}
+        {activeTab === 'ci' && (
+          <CISection
+            buildYml={BUILD_YML}
+            onDownload={handleDownload}
+          />
+        )}
       </main>
 
       {/* Footer */}
@@ -736,10 +841,11 @@ int32_t bitlocker_key_manager_app(void* p) {
   )
 }
 
+// ========================= Overview Section =========================
+
 function OverviewSection() {
   return (
     <div className="space-y-8">
-      {/* Hero */}
       <div className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border border-orange-500/20 rounded-xl p-8">
         <h2 className="text-2xl font-bold text-orange-400 mb-4">
           🔐 BitLocker Recovery Key Manager
@@ -747,11 +853,10 @@ function OverviewSection() {
         <p className="text-gray-300 leading-relaxed">
           Flipper Zero上でBitLocker回復キーを管理するアプリケーションです。
           回復キーをSDカードのtxtファイルとして保存し、必要に応じてUSB HID（BadUSB）経由で
-          自動入力できます。
+          自動入力できます。GitHub Actionsによる自動ビルド・リリースにも対応しています。
         </p>
       </div>
 
-      {/* Features */}
       <div className="grid md:grid-cols-3 gap-6">
         <FeatureCard
           icon="💾"
@@ -770,61 +875,60 @@ function OverviewSection() {
         />
       </div>
 
-      {/* Input Modes Detail */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">入力モード詳細</h3>
-        <div className="grid md:grid-cols-2 gap-6">
-          <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h4 className="font-bold text-green-400 mb-2">🔢 Digits Mode（数字入力）</h4>
-            <p className="text-sm text-gray-400 mb-3">テンキー/数字キーで直接入力</p>
-            <div className="font-mono text-xs text-gray-300 space-y-1">
-              <p>0-9 → 数字キー 0-9</p>
-              <p>- → マイナスキー</p>
-              <p>最後 → Enter</p>
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 className="text-lg font-bold text-gray-200 mb-4">入力モード詳細</h3>
+          <div className="space-y-4">
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <h4 className="font-bold text-green-400 mb-2">🔢 Digits Mode</h4>
+              <p className="text-sm text-gray-400 mb-2">テンキー/数字キーで直接入力</p>
+              <div className="font-mono text-xs text-gray-300 space-y-1">
+                <p>0-9 → 数字キー 0-9</p>
+                <p>- → マイナスキー</p>
+                <p>最後 → Enter</p>
+              </div>
+            </div>
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <h4 className="font-bold text-purple-400 mb-2">⌨️ F-Keys Mode</h4>
+              <p className="text-sm text-gray-400 mb-2">ファンクションキーで数字を表現</p>
+              <div className="font-mono text-xs text-gray-300 space-y-1">
+                <p>F1=1, F2=2, ... F9=9, F10=0</p>
+                <p>F11 → ハイフン (-)</p>
+                <p>F12 → Enter</p>
+              </div>
             </div>
           </div>
-          <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h4 className="font-bold text-purple-400 mb-2">⌨️ F-Keys Mode（ファンクションキー）</h4>
-            <p className="text-sm text-gray-400 mb-3">ファンクションキーで数字を表現</p>
-            <div className="font-mono text-xs text-gray-300 space-y-1">
-              <p>F1=1, F2=2, ... F9=9, F10=0</p>
-              <p>F11 → ハイフン (-)</p>
-              <p>F12 → Enter</p>
+        </div>
+
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 className="text-lg font-bold text-gray-200 mb-4">BitLocker回復キー形式</h3>
+          <div className="bg-gray-800 rounded-lg p-4 font-mono text-sm">
+            <p className="text-orange-400">XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX</p>
+            <p className="text-gray-500 mt-2">48桁の数字（6グループ × 8桁）、ハイフン区切り</p>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="bg-gray-800 rounded p-3 text-center">
+              <p className="text-2xl font-bold text-orange-400">48</p>
+              <p className="text-xs text-gray-500">桁の数字</p>
+            </div>
+            <div className="bg-gray-800 rounded p-3 text-center">
+              <p className="text-2xl font-bold text-orange-400">6</p>
+              <p className="text-xs text-gray-500">グループ</p>
+            </div>
+            <div className="bg-gray-800 rounded p-3 text-center">
+              <p className="text-2xl font-bold text-orange-400">8</p>
+              <p className="text-xs text-gray-500">桁/グループ</p>
+            </div>
+            <div className="bg-gray-800 rounded p-3 text-center">
+              <p className="text-2xl font-bold text-orange-400">5</p>
+              <p className="text-xs text-gray-500">ハイフン</p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Key Format */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">BitLocker回復キー形式</h3>
-        <div className="bg-gray-800 rounded-lg p-4 font-mono text-sm">
-          <p className="text-orange-400">XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX</p>
-          <p className="text-gray-500 mt-2">48桁の数字（6グループ × 8桁）、ハイフン区切り</p>
-        </div>
-        <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="bg-gray-800 rounded p-3 text-center">
-            <p className="text-2xl font-bold text-orange-400">48</p>
-            <p className="text-xs text-gray-500">桁の数字</p>
-          </div>
-          <div className="bg-gray-800 rounded p-3 text-center">
-            <p className="text-2xl font-bold text-orange-400">6</p>
-            <p className="text-xs text-gray-500">グループ</p>
-          </div>
-          <div className="bg-gray-800 rounded p-3 text-center">
-            <p className="text-2xl font-bold text-orange-400">8</p>
-            <p className="text-xs text-gray-500">桁/グループ</p>
-          </div>
-          <div className="bg-gray-800 rounded p-3 text-center">
-            <p className="text-2xl font-bold text-orange-400">5</p>
-            <p className="text-xs text-gray-500">ハイフン</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Architecture */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">アプリ構成</h3>
+        <h3 className="text-lg font-bold text-gray-200 mb-4">アプリ構成（Scene-based Architecture）</h3>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -878,94 +982,83 @@ function FeatureCard({ icon, title, description }: { icon: string; title: string
   )
 }
 
+// ========================= Code Section =========================
+
 function CodeSection({
   activeFile,
   setActiveFile,
-  mainCode,
-  famCode,
+  files,
   copied,
   onCopy,
   onDownload,
+  onDownloadAll,
 }: {
-  activeFile: 'main' | 'fam'
-  setActiveFile: (f: 'main' | 'fam') => void
-  mainCode: string
-  famCode: string
+  activeFile: FileId
+  setActiveFile: (f: FileId) => void
+  files: Record<FileId, { name: string; content: string }>
   copied: boolean
   onCopy: () => void
   onDownload: (filename: string, content: string) => void
+  onDownloadAll: () => void
 }) {
-  const currentCode = activeFile === 'main' ? mainCode : famCode
-  const currentFilename = activeFile === 'main' ? 'bitlocker_key_manager.c' : 'application.fam'
+  const currentFile = files[activeFile]
 
   return (
     <div className="space-y-4">
-      {/* File tabs and actions */}
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex gap-1 bg-gray-900 rounded-lg p-1">
-          <button
-            onClick={() => setActiveFile('main')}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              activeFile === 'main'
-                ? 'bg-orange-500 text-gray-900'
-                : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            bitlocker_key_manager.c
-          </button>
-          <button
-            onClick={() => setActiveFile('fam')}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              activeFile === 'fam'
-                ? 'bg-orange-500 text-gray-900'
-                : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            application.fam
-          </button>
+        <div className="flex gap-1 bg-gray-900 rounded-lg p-1 flex-wrap">
+          {(Object.keys(files) as FileId[]).map((fileId) => (
+            <button
+              key={fileId}
+              onClick={() => setActiveFile(fileId)}
+              className={`px-3 py-2 rounded-md text-xs font-medium transition-colors ${
+                activeFile === fileId
+                  ? 'bg-orange-500 text-gray-900'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              {files[fileId].name}
+            </button>
+          ))}
         </div>
         <div className="flex gap-2">
           <button
             onClick={onCopy}
-            className="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+            className="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-sm font-medium transition-colors"
           >
             {copied ? '✅ Copied!' : '📋 Copy'}
           </button>
           <button
-            onClick={() => onDownload(currentFilename, currentCode)}
-            className="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+            onClick={() => onDownload(currentFile.name, currentFile.content)}
+            className="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition-colors"
           >
             ⬇️ Download
           </button>
           <button
-            onClick={() => {
-              onDownload('bitlocker_key_manager.c', mainCode)
-              setTimeout(() => onDownload('application.fam', famCode), 200)
-            }}
-            className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+            onClick={onDownloadAll}
+            className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg text-sm font-medium transition-colors"
           >
             📦 Download All
           </button>
         </div>
       </div>
 
-      {/* Code display */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
-          <span className="text-sm text-gray-400 font-mono">{currentFilename}</span>
+          <span className="text-sm text-gray-400 font-mono">{currentFile.name}</span>
           <span className="text-xs text-gray-500">
-            {currentCode.split('\n').length} lines
+            {currentFile.content.split('\n').length} lines
           </span>
         </div>
         <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
           <pre className="p-4 text-sm font-mono leading-relaxed">
             <code className="text-gray-300">
-              {currentCode.split('\n').map((line, i) => (
-                <div key={i} className="flex">
+              {currentFile.content.split('\n').map((line, i) => (
+                <div key={i} className="flex hover:bg-gray-800/50">
                   <span className="text-gray-600 select-none w-12 text-right pr-4 flex-shrink-0">
                     {i + 1}
                   </span>
-                  <span className={getLineColor(line)}>{highlightSyntax(line)}</span>
+                  <span className={getLineColor(line)}>{line}</span>
                 </div>
               ))}
             </code>
@@ -987,17 +1080,7 @@ function getLineColor(line: string): string {
   return ''
 }
 
-function highlightSyntax(line: string): JSX.Element {
-  // Simple syntax highlighting
-  const keywords = /\b(typedef|enum|struct|void|int|uint8_t|uint16_t|uint32_t|int32_t|bool|char|const|static|return|if|else|for|while|switch|case|break|true|false|NULL|UNUSED)\b/g
-  const types = /\b(BitLockerApp|InputMode|AppViewId|AppSceneId|SceneManager|ViewDispatcher|Submenu|TextInput|Popup|VariableItemList|Storage|File|FuriString|Gui|SceneManagerEvent|SceneManagerHandlers|FileInfo)\b/g
-  const strings = /"[^"]*"/g
-  const numbers = /\b(0x[0-9A-Fa-f]+|\d+)\b/g
-  const preprocessor = /^(\s*#\w+)/
-
-  // Simple approach: just return the line as-is with basic coloring
-  return <span>{line}</span>
-}
+// ========================= Install Section =========================
 
 function InstallSection() {
   return (
@@ -1006,10 +1089,10 @@ function InstallSection() {
         <h2 className="text-2xl font-bold text-green-400 mb-4">📦 インストールガイド</h2>
         <p className="text-gray-300">
           以下の手順でFlipper Zeroにアプリをビルド・インストールできます。
+          GitHub Actionsでの自動ビルドにも対応しています。
         </p>
       </div>
 
-      {/* Prerequisites */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
         <h3 className="text-lg font-bold text-gray-200 mb-4">前提条件</h3>
         <ul className="space-y-3 text-gray-300">
@@ -1024,65 +1107,33 @@ function InstallSection() {
           </li>
           <li className="flex items-start gap-3">
             <span className="text-orange-400 mt-1">▸</span>
-            <div>
-              <strong>Flipper Zero</strong> 本体 + USBケーブル
-            </div>
+            <div><strong>Flipper Zero</strong> 本体 + USBケーブル</div>
           </li>
           <li className="flex items-start gap-3">
             <span className="text-orange-400 mt-1">▸</span>
-            <div>
-              <strong>Visual Studio Code</strong>（推奨）
-            </div>
+            <div><strong>Visual Studio Code</strong>（推奨）</div>
           </li>
         </ul>
       </div>
 
-      {/* Steps */}
       <div className="space-y-6">
-        <StepCard
-          step={1}
-          title="プロジェクトフォルダの作成"
-          code={`mkdir bitlocker_key_manager
-cd bitlocker_key_manager`}
-        />
-        <StepCard
-          step={2}
-          title="ソースファイルの配置"
-          code={`# 以下のファイルを配置:
-# - application.fam
-# - bitlocker_key_manager.c
-# - icon.png (10x10, 1bit color)`}
-        />
-        <StepCard
-          step={3}
-          title="VS Codeの設定"
-          code={`ufbt vscode_dist`}
-        />
-        <StepCard
-          step={4}
-          title="ビルド"
-          code={`ufbt`}
-        />
-        <StepCard
-          step={5}
-          title="Flipper Zeroに転送＆実行"
-          code={`# Flipper ZeroをUSB接続して:
-ufbt launch
-
-# または手動で:
-# qFlipper > File Manager > SD Card > apps > Tools
-# に .fap ファイルをコピー`}
-        />
+        <StepCard step={1} title="プロジェクトフォルダの作成" code={`mkdir bitlocker_key_manager\ncd bitlocker_key_manager`} />
+        <StepCard step={2} title="ソースファイルの配置" code={`# 以下のファイルを配置:\n# - application.fam\n# - bitlocker_key_manager.c\n# - icon.png (10x10, 1bit color)`} />
+        <StepCard step={3} title="VS Codeの設定" code={`ufbt vscode_dist`} />
+        <StepCard step={4} title="ビルド" code={`ufbt`} />
+        <StepCard step={5} title="Flipper Zeroに転送＆実行" code={`# Flipper ZeroをUSB接続して:\nufbt launch\n\n# または手動で:\n# qFlipper > File Manager > SD Card > apps > Tools\n# に .fap ファイルをコピー`} />
       </div>
 
-      {/* File Structure */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
         <h3 className="text-lg font-bold text-gray-200 mb-4">ファイル構成</h3>
         <pre className="bg-gray-800 rounded-lg p-4 text-sm font-mono text-gray-300">
 {`bitlocker_key_manager/
-├── application.fam          # アプリマニフェスト
-├── bitlocker_key_manager.c  # メインソースコード
-├── icon.png                 # アプリアイコン (10x10px)
+├── application.fam              # アプリマニフェスト
+├── bitlocker_key_manager.c      # メインソースコード
+├── icon.png                     # アプリアイコン (10x10px)
+├── .github/
+│   └── workflows/
+│       └── build.yml            # GitHub Actions CI/CD
 ├── images/
 │   └── .gitkeep
 └── .github/
@@ -1091,7 +1142,6 @@ ufbt launch
         </pre>
       </div>
 
-      {/* Usage */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
         <h3 className="text-lg font-bold text-gray-200 mb-4">使い方</h3>
         <div className="space-y-4">
@@ -1124,7 +1174,6 @@ ufbt launch
         </div>
       </div>
 
-      {/* Warning */}
       <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-6">
         <h3 className="text-lg font-bold text-red-400 mb-2">⚠️ 注意事項</h3>
         <ul className="text-sm text-gray-300 space-y-2">
@@ -1152,6 +1201,245 @@ function StepCard({ step, title, code }: { step: number; title: string; code: st
       </pre>
     </div>
   )
+}
+
+// ========================= CI/CD Section =========================
+
+function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f: string, c: string) => void }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(buildYml)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* Hero */}
+      <div className="bg-gradient-to-br from-blue-500/10 to-purple-600/5 border border-blue-500/20 rounded-xl p-8">
+        <h2 className="text-2xl font-bold text-blue-400 mb-4">⚙️ GitHub Actions CI/CD</h2>
+        <p className="text-gray-300 leading-relaxed">
+          GitHub Actionsを使用して、プッシュやプルリクエスト時に自動的にFlipper Zeroアプリをビルドします。
+          dev/releaseの両チャンネルに対応し、自動リリースも可能です。
+        </p>
+      </div>
+
+      {/* Pipeline Overview */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-gray-200 mb-6">ビルドパイプライン</h3>
+        <div className="flex flex-col md:flex-row items-center gap-4">
+          <PipelineStep icon="🔄" label="Trigger" sublabel="push / PR / schedule" color="blue" />
+          <Arrow />
+          <PipelineStep icon="🔨" label="Build (dev)" sublabel="ufbt build" color="orange" />
+          <Arrow />
+          <PipelineStep icon="🔨" label="Build (release)" sublabel="ufbt build" color="orange" />
+          <Arrow />
+          <PipelineStep icon="🔍" label="Lint" sublabel="clang-format" color="yellow" />
+          <Arrow />
+          <PipelineStep icon="🚀" label="Release" sublabel="auto tag + upload" color="green" />
+        </div>
+      </div>
+
+      {/* Trigger Events */}
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 className="text-lg font-bold text-gray-200 mb-4">🎯 トリガーイベント</h3>
+          <ul className="space-y-3 text-sm text-gray-300">
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400">●</span>
+              <div>
+                <strong>push</strong> — main/masterブランチへのプッシュ時
+              </div>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400">●</span>
+              <div>
+                <strong>pull_request</strong> — PR作成・更新時
+              </div>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400">●</span>
+              <div>
+                <strong>schedule</strong> — 毎日01:00 UTCに自動ビルド
+              </div>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400">●</span>
+              <div>
+                <strong>workflow_dispatch</strong> — 手動実行も可能
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 className="text-lg font-bold text-gray-200 mb-4">📦 ビルドターゲット</h3>
+          <div className="space-y-4">
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="w-3 h-3 bg-orange-500 rounded-full"></span>
+                <strong className="text-orange-400">dev channel</strong>
+              </div>
+              <p className="text-xs text-gray-400">最新開発ファームウェア用（unleashed等）</p>
+            </div>
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="w-3 h-3 bg-green-500 rounded-full"></span>
+                <strong className="text-green-400">release channel</strong>
+              </div>
+              <p className="text-xs text-gray-400">公式リリースファームウェア用</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Release Info */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-gray-200 mb-4">🚀 自動リリース</h3>
+        <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700 mb-4">
+          <p className="text-sm text-gray-300">
+            main/masterブランチへのpush時に、ビルド＆リント成功後自動的にGitHub Releaseを作成します。
+          </p>
+        </div>
+        <div className="grid md:grid-cols-3 gap-4">
+          <div className="bg-gray-800 rounded-lg p-4 text-center">
+            <p className="text-2xl mb-1">🏷️</p>
+            <p className="text-sm font-bold text-gray-200">自動タグ</p>
+            <p className="text-xs text-gray-500 mt-1">application.famのバージョンから自動生成</p>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-4 text-center">
+            <p className="text-2xl mb-1">📝</p>
+            <p className="text-sm font-bold text-gray-200">リリースノート</p>
+            <p className="text-xs text-gray-500 mt-1">コミット情報・ビルド情報を自動記載</p>
+          </div>
+          <div className="bg-gray-800 rounded-lg p-4 text-center">
+            <p className="text-2xl mb-1">📎</p>
+            <p className="text-sm font-bold text-gray-200">バイナリ添付</p>
+            <p className="text-xs text-gray-500 mt-1">全ビルドの.fapファイルを自動アップロード</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Workflow Code */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 bg-gray-800 border-b border-gray-700">
+          <span className="text-sm text-gray-400 font-mono">.github/workflows/build.yml</span>
+          <div className="flex gap-2">
+            <button
+              onClick={handleCopy}
+              className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors"
+            >
+              {copied ? '✅ Copied!' : '📋 Copy'}
+            </button>
+            <button
+              onClick={() => onDownload('build.yml', buildYml)}
+              className="px-3 py-1 bg-orange-600 hover:bg-orange-500 rounded text-xs font-medium transition-colors"
+            >
+              ⬇️ Download
+            </button>
+          </div>
+        </div>
+        <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
+          <pre className="p-4 text-sm font-mono leading-relaxed">
+            <code className="text-gray-300">
+              {buildYml.split('\n').map((line, i) => (
+                <div key={i} className="flex hover:bg-gray-800/50">
+                  <span className="text-gray-600 select-none w-12 text-right pr-4 flex-shrink-0">
+                    {i + 1}
+                  </span>
+                  <span className={getYamlLineColor(line)}>{line}</span>
+                </div>
+              ))}
+            </code>
+          </pre>
+        </div>
+      </div>
+
+      {/* Setup Steps */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-gray-200 mb-4">🛠️ セットアップ手順</h3>
+        <div className="space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">1</div>
+            <div>
+              <p className="text-sm font-bold text-gray-200">GitHubリポジトリを作成</p>
+              <p className="text-xs text-gray-500 mt-1">すべてのソースファイルをコミット</p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">2</div>
+            <div>
+              <p className="text-sm font-bold text-gray-200">ワークフローファイルを配置</p>
+              <pre className="text-xs text-gray-400 mt-1 bg-gray-800 px-2 py-1 rounded">
+                <code>mkdir -p .github/workflows{"\n"}cp build.yml .github/workflows/build.yml</code>
+              </pre>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">3</div>
+            <div>
+              <p className="text-sm font-bold text-gray-200">プッシュして自動ビルド開始</p>
+              <pre className="text-xs text-gray-400 mt-1 bg-gray-800 px-2 py-1 rounded">
+                <code>git add .{"\n"}git commit -m "Initial commit with CI/CD"{"\n"}git push origin main</code>
+              </pre>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">4</div>
+            <div>
+              <p className="text-sm font-bold text-gray-200">Actionsタブでビルド状況を確認</p>
+              <p className="text-xs text-gray-500 mt-1">
+                成功するとArtifactsから.fapファイルをダウンロード可能。mainブランチへのpushで自動リリースも作成されます。
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Badge Examples */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-gray-200 mb-4">🏅 READMEバッジ例</h3>
+        <p className="text-sm text-gray-400 mb-4">README.mdに以下のバッジを追加できます：</p>
+        <div className="bg-gray-800 rounded-lg p-4">
+          <pre className="text-xs font-mono text-gray-300">
+{`[![Build](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/build.yml/badge.svg)](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/YOUR_USERNAME/YOUR_REPO)](https://github.com/YOUR_USERNAME/YOUR_REPO/releases)`}
+          </pre>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PipelineStep({ icon, label, sublabel, color }: { icon: string; label: string; sublabel: string; color: string }) {
+  const colorMap: Record<string, string> = {
+    blue: 'border-blue-500/50 bg-blue-500/10',
+    orange: 'border-orange-500/50 bg-orange-500/10',
+    yellow: 'border-yellow-500/50 bg-yellow-500/10',
+    green: 'border-green-500/50 bg-green-500/10',
+  }
+  return (
+    <div className={`flex flex-col items-center gap-1 px-4 py-3 rounded-lg border ${colorMap[color]}`}>
+      <span className="text-2xl">{icon}</span>
+      <span className="text-xs font-bold text-gray-200">{label}</span>
+      <span className="text-[10px] text-gray-500">{sublabel}</span>
+    </div>
+  )
+}
+
+function Arrow() {
+  return <span className="text-gray-600 text-xl hidden md:block">→</span>
+}
+
+function getYamlLineColor(line: string): string {
+  const trimmed = line.trim()
+  if (trimmed.startsWith('#')) return 'text-green-600'
+  if (trimmed.startsWith('name:') || trimmed.startsWith('on:') || trimmed.startsWith('jobs:') || trimmed.startsWith('permissions:')) return 'text-blue-400'
+  if (trimmed.startsWith('- name:') || trimmed.startsWith('- cron:')) return 'text-yellow-400'
+  if (trimmed.includes('uses:')) return 'text-purple-400'
+  if (trimmed.includes('${{')) return 'text-orange-400'
+  return ''
 }
 
 export default App
