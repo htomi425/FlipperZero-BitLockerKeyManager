@@ -52,7 +52,6 @@ jobs:
         run: |
           SHORT_SHA=$(echo "\${{ github.sha }}" | cut -c1-7)
           echo "SHORT_SHA=\${SHORT_SHA}" >> \$GITHUB_ENV
-          # Rewrite fap_version in application.fam to use commit SHA
           sed -i "s/fap_version=\\"[^\\"]*\\"/fap_version=\\"\${SHORT_SHA}\\"/" application.fam
           echo "Updated fap_version to: \${SHORT_SHA}"
           grep fap_version application.fam
@@ -169,13 +168,11 @@ const MAIN_C_CODE = `#include <furi.h>
 
 #define STORAGE_PATH      EXT_PATH("bitlocker_keys")
 #define KEY_FILE_EXT      ".txt"
-#define RECOVERY_KEY_LEN  55  // 48 digits + 5 hyphens + null
+#define RECOVERY_KEY_LEN  55
 #define DIGITS_PER_GROUP  8
 #define NUM_GROUPS        6
 #define TYPE_DELAY_MS     50
 #define GROUP_DELAY_MS    200
-
-/* ========================= Enumerations ========================= */
 
 typedef enum {
     InputModeDigits = 0,
@@ -201,62 +198,31 @@ typedef enum {
     SceneCount,
 } AppSceneId;
 
-/* ========================= App Structure ========================= */
-
 typedef struct {
     SceneManager* scene_manager;
     ViewDispatcher* view_dispatcher;
-
-    // GUI modules
     Submenu* submenu;
     TextInput* text_input;
     Popup* popup;
     VariableItemList* settings_list;
-
-    // Data
     char key_buffer[RECOVERY_KEY_LEN];
     char selected_file_path[256];
     InputMode input_mode;
     bool usb_connected;
 } BitLockerApp;
 
-/* ========================= HID Key Helpers ========================= */
-
-// HID keyboard scan codes for digits
 static const uint8_t hid_digit_codes[] = {
-    0x27, // 0
-    0x1E, // 1
-    0x1F, // 2
-    0x20, // 3
-    0x21, // 4
-    0x22, // 5
-    0x23, // 6
-    0x24, // 7
-    0x25, // 8
-    0x26, // 9
+    0x27, 0x1E, 0x1F, 0x20, 0x21,
+    0x22, 0x23, 0x24, 0x25, 0x26,
 };
 
-// HID keyboard scan codes for F1-F12
 static const uint8_t hid_fkey_codes[] = {
-    0x3A, // F1
-    0x3B, // F2
-    0x3C, // F3
-    0x3D, // F4
-    0x3E, // F5
-    0x3F, // F6
-    0x40, // F7
-    0x41, // F8
-    0x42, // F9
-    0x43, // F10
-    0x44, // F11
-    0x45, // F12
+    0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F,
+    0x40, 0x41, 0x42, 0x43, 0x44, 0x45,
 };
 
-#define HID_KEYBOARD_ENTER    0x28
-#define HID_KEYBOARD_TAB      0x2B
-#define HID_KEYBOARD_SPACEBAR 0x2C
-#define HID_KEYBOARD_DELETE   0x2A
-#define HID_KEYBOARD_MINUS    0x2D
+#define HID_KEYBOARD_ENTER  0x28
+#define HID_KEYBOARD_MINUS  0x2D
 
 static void hid_press_key(uint8_t key_code) {
     furi_hal_hid_kb_press(key_code);
@@ -267,19 +233,12 @@ static void hid_press_key(uint8_t key_code) {
 
 static void hid_type_digit_digits_mode(char digit) {
     uint8_t idx = digit - '0';
-    if(idx < 10) {
-        hid_press_key(hid_digit_codes[idx]);
-    }
+    if(idx < 10) hid_press_key(hid_digit_codes[idx]);
 }
 
 static void hid_type_digit_fkey_mode(char digit) {
     uint8_t idx = digit - '0';
-    uint8_t fkey_idx;
-    if(idx == 0) {
-        fkey_idx = 9; // F10 = 0
-    } else {
-        fkey_idx = idx - 1; // F1=1, F2=2, ...
-    }
+    uint8_t fkey_idx = (idx == 0) ? 9 : idx - 1;
     hid_press_key(hid_fkey_codes[fkey_idx]);
 }
 
@@ -291,8 +250,6 @@ static void hid_type_enter(void) {
     hid_press_key(HID_KEYBOARD_ENTER);
 }
 
-/* ========================= File Operations ========================= */
-
 static bool ensure_storage_dir(void) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     bool result = storage_simply_mkdir(storage, STORAGE_PATH);
@@ -303,148 +260,100 @@ static bool ensure_storage_dir(void) {
 static bool save_key_to_file(const char* filename, const char* key_data) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     ensure_storage_dir();
-
     FuriString* file_path = furi_string_alloc_printf(
         "%s/%s%s", STORAGE_PATH, filename, KEY_FILE_EXT);
-    
     File* file = storage_file_alloc(storage);
     bool success = false;
-
     if(storage_file_open(file, furi_string_get_cstr(file_path),
                          FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
-        uint16_t bytes_written = storage_file_write(
-            file, key_data, strlen(key_data));
-        success = (bytes_written == strlen(key_data));
+        uint16_t written = storage_file_write(file, key_data, strlen(key_data));
+        success = (written == strlen(key_data));
         storage_file_close(file);
     }
-
     storage_file_free(file);
     furi_string_free(file_path);
     furi_record_close(RECORD_STORAGE);
     return success;
 }
 
-static bool read_key_from_file(const char* filepath, char* buffer,
-                               size_t buffer_size) {
+static bool read_key_from_file(const char* filepath, char* buffer, size_t buf_size) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* file = storage_file_alloc(storage);
     bool success = false;
-
     if(storage_file_open(file, filepath, FSAM_READ, FSOM_OPEN_EXISTING)) {
-        uint16_t bytes_read = storage_file_read(file, buffer,
-                                                 buffer_size - 1);
+        uint16_t bytes_read = storage_file_read(file, buffer, buf_size - 1);
         if(bytes_read > 0) {
             buffer[bytes_read] = '\\0';
             for(int i = bytes_read - 1; i >= 0; i--) {
-                if(buffer[i] == '\\n' || buffer[i] == '\\r' ||
-                   buffer[i] == ' ') {
+                if(buffer[i] == '\\n' || buffer[i] == '\\r' || buffer[i] == ' ')
                     buffer[i] = '\\0';
-                } else {
-                    break;
-                }
+                else break;
             }
             success = true;
         }
         storage_file_close(file);
     }
-
     storage_file_free(file);
     furi_record_close(RECORD_STORAGE);
     return success;
 }
 
-/* ========================= Key Validation ========================= */
-
 static bool validate_recovery_key(const char* key) {
-    int digit_count = 0;
-    int hyphen_count = 0;
-    int current_group = 0;
-
+    int digits = 0, hyphens = 0, group = 0;
     for(int i = 0; key[i] != '\\0'; i++) {
         if(key[i] >= '0' && key[i] <= '9') {
-            digit_count++;
-            current_group++;
-            if(current_group > DIGITS_PER_GROUP) return false;
+            digits++; group++;
+            if(group > DIGITS_PER_GROUP) return false;
         } else if(key[i] == '-') {
-            hyphen_count++;
-            if(current_group != DIGITS_PER_GROUP) return false;
-            current_group = 0;
-        } else {
-            return false;
-        }
+            hyphens++;
+            if(group != DIGITS_PER_GROUP) return false;
+            group = 0;
+        } else return false;
     }
-
-    return (digit_count == 48 && hyphen_count == 5 &&
-            current_group == DIGITS_PER_GROUP);
+    return (digits == 48 && hyphens == 5 && group == DIGITS_PER_GROUP);
 }
-
-/* ========================= USB HID Input ========================= */
 
 static void input_recovery_key(BitLockerApp* app) {
     const char* key = app->key_buffer;
-    
-    if(!validate_recovery_key(key)) {
-        FURI_LOG_E(TAG, "Invalid recovery key format");
-        return;
-    }
-
+    if(!validate_recovery_key(key)) return;
     furi_hal_usb_set_config(&usb_hid, NULL);
     furi_delay_ms(1000);
-
     for(int i = 0; key[i] != '\\0'; i++) {
         if(key[i] == '-') {
             hid_type_hyphen();
             furi_delay_ms(GROUP_DELAY_MS);
         } else {
-            if(app->input_mode == InputModeDigits) {
+            if(app->input_mode == InputModeDigits)
                 hid_type_digit_digits_mode(key[i]);
-            } else {
+            else
                 hid_type_digit_fkey_mode(key[i]);
-            }
         }
     }
-
     furi_delay_ms(100);
     hid_type_enter();
-    FURI_LOG_I(TAG, "Key input complete");
 }
-
-/* ========================= Scene Callbacks ========================= */
 
 static void scene_main_menu_callback(void* context, uint32_t index) {
     BitLockerApp* app = context;
     switch(index) {
-    case 0:
-        scene_manager_next_scene(app->scene_manager, SceneSaveKey);
-        break;
-    case 1:
-        scene_manager_next_scene(app->scene_manager, SceneFileSelect);
-        break;
-    case 2:
-        scene_manager_next_scene(app->scene_manager, SceneSettings);
-        break;
+    case 0: scene_manager_next_scene(app->scene_manager, SceneSaveKey); break;
+    case 1: scene_manager_next_scene(app->scene_manager, SceneFileSelect); break;
+    case 2: scene_manager_next_scene(app->scene_manager, SceneSettings); break;
     }
 }
 
 static void scene_save_key_callback(void* context) {
     BitLockerApp* app = context;
-    
     if(!validate_recovery_key(app->key_buffer)) {
         scene_manager_set_scene_state(app->scene_manager, SceneSaveKey, 1);
         scene_manager_next_scene(app->scene_manager, SceneInputProgress);
         return;
     }
-
-    FuriString* filename = furi_string_alloc();
-    uint32_t timestamp = furi_hal_rtc_get_timestamp();
-    furi_string_printf(filename, "key_%lu", timestamp);
-
-    bool saved = save_key_to_file(furi_string_get_cstr(filename),
-                                   app->key_buffer);
-    furi_string_free(filename);
-
-    scene_manager_set_scene_state(app->scene_manager, SceneSaveKey,
-                                   saved ? 0 : 2);
+    FuriString* fn = furi_string_alloc();
+    furi_string_printf(fn, "key_%lu", furi_hal_rtc_get_timestamp());
+    bool saved = save_key_to_file(furi_string_get_cstr(fn), app->key_buffer);
+    furi_string_free(fn);
+    scene_manager_set_scene_state(app->scene_manager, SceneSaveKey, saved ? 0 : 2);
     scene_manager_next_scene(app->scene_manager, SceneInputProgress);
 }
 
@@ -454,53 +363,34 @@ static void scene_settings_change_callback(void* context, uint32_t index) {
         VariableItem* item = variable_item_list_get(app->settings_list, 0);
         uint8_t mode_idx = variable_item_get_current_value_index(item);
         app->input_mode = (InputMode)mode_idx;
-        variable_item_set_current_value_text(item,
-            mode_idx == 0 ? "Digits" : "F-Keys");
+        variable_item_set_current_value_text(item, mode_idx == 0 ? "Digits" : "F-Keys");
     }
 }
-
-/* ========================= Scene Handlers ========================= */
 
 static void scene_main_menu_on_enter(void* context) {
     BitLockerApp* app = context;
     submenu_reset(app->submenu);
-    submenu_set_header(app->submenu, "BitLocker Key Mgr", 64, 2,
-                       AlignCenter, AlignTop);
-    submenu_add_item(app->submenu, "Save Recovery Key", 0,
-                     scene_main_menu_callback, app);
-    submenu_add_item(app->submenu, "Input Recovery Key", 1,
-                     scene_main_menu_callback, app);
-    submenu_add_item(app->submenu, "Settings", 2,
-                     scene_main_menu_callback, app);
+    submenu_set_header(app->submenu, "BitLocker Key Mgr", 64, 2, AlignCenter, AlignTop);
+    submenu_add_item(app->submenu, "Save Recovery Key", 0, scene_main_menu_callback, app);
+    submenu_add_item(app->submenu, "Input Recovery Key", 1, scene_main_menu_callback, app);
+    submenu_add_item(app->submenu, "Settings", 2, scene_main_menu_callback, app);
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewSubmenu);
 }
 
-static bool scene_main_menu_on_event(void* c, SceneManagerEvent e) {
-    UNUSED(c); UNUSED(e); return false;
-}
-
-static void scene_main_menu_on_exit(void* context) {
-    submenu_reset(((BitLockerApp*)context)->submenu);
-}
+static bool scene_main_menu_on_event(void* c, SceneManagerEvent e) { UNUSED(c); UNUSED(e); return false; }
+static void scene_main_menu_on_exit(void* context) { submenu_reset(((BitLockerApp*)context)->submenu); }
 
 static void scene_save_key_on_enter(void* context) {
     BitLockerApp* app = context;
     text_input_reset(app->text_input);
-    text_input_set_header_text(app->text_input,
-        "Enter 48-digit key\\n(XXXXXX-XXXXXX-...)");
-    text_input_set_result_callback(app->text_input,
-        scene_save_key_callback, app, app->key_buffer,
-        RECOVERY_KEY_LEN, true);
+    text_input_set_header_text(app->text_input, "Enter 48-digit key\\n(XXXXXX-XXXXXX-...)");
+    text_input_set_result_callback(app->text_input, scene_save_key_callback,
+        app, app->key_buffer, RECOVERY_KEY_LEN, true);
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewTextInput);
 }
 
-static bool scene_save_key_on_event(void* c, SceneManagerEvent e) {
-    UNUSED(c); UNUSED(e); return false;
-}
-
-static void scene_save_key_on_exit(void* context) {
-    text_input_reset(((BitLockerApp*)context)->text_input);
-}
+static bool scene_save_key_on_event(void* c, SceneManagerEvent e) { UNUSED(c); UNUSED(e); return false; }
+static void scene_save_key_on_exit(void* context) { text_input_reset(((BitLockerApp*)context)->text_input); }
 
 static void scene_settings_on_enter(void* context) {
     BitLockerApp* app = context;
@@ -508,53 +398,36 @@ static void scene_settings_on_enter(void* context) {
     VariableItem* item = variable_item_list_add(app->settings_list,
         "Input Mode", 2, scene_settings_change_callback, app);
     variable_item_set_current_value_index(item, (uint8_t)app->input_mode);
-    variable_item_set_current_value_text(item,
-        app->input_mode == InputModeDigits ? "Digits" : "F-Keys");
+    variable_item_set_current_value_text(item, app->input_mode == InputModeDigits ? "Digits" : "F-Keys");
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewSettings);
 }
 
-static bool scene_settings_on_event(void* c, SceneManagerEvent e) {
-    UNUSED(c); UNUSED(e); return false;
-}
-
-static void scene_settings_on_exit(void* context) {
-    variable_item_list_reset(((BitLockerApp*)context)->settings_list);
-}
+static bool scene_settings_on_event(void* c, SceneManagerEvent e) { UNUSED(c); UNUSED(e); return false; }
+static void scene_settings_on_exit(void* context) { variable_item_list_reset(((BitLockerApp*)context)->settings_list); }
 
 static void scene_file_select_on_enter(void* context) {
     BitLockerApp* app = context;
     submenu_reset(app->submenu);
-    submenu_set_header(app->submenu, "Select Key File", 64, 2,
-                       AlignCenter, AlignTop);
-
+    submenu_set_header(app->submenu, "Select Key File", 64, 2, AlignCenter, AlignTop);
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* dir = storage_file_alloc(storage);
-
     if(storage_dir_open(dir, STORAGE_PATH)) {
-        FileInfo file_info;
-        FuriString* filename = furi_string_alloc();
-        uint32_t item_index = 0;
-
-        while(storage_dir_read(dir, &file_info,
-               furi_string_get_ansi(filename), 255)) {
-            if(file_info.flags & FSF_DIRECTORY) continue;
-            size_t name_len = furi_string_size(filename);
-            size_t ext_len = strlen(KEY_FILE_EXT);
-            if(name_len > ext_len) {
-                const char* name_str = furi_string_get_cstr(filename);
-                if(strcmp(name_str + name_len - ext_len, KEY_FILE_EXT) == 0) {
-                    furi_string_printf(app->selected_file_path,
-                        "%s/%s", STORAGE_PATH, name_str);
-                    submenu_add_item(app->submenu, name_str, item_index,
-                        scene_main_menu_callback, app);
-                    item_index++;
-                }
+        FileInfo fi;
+        FuriString* fn = furi_string_alloc();
+        uint32_t idx = 0;
+        while(storage_dir_read(dir, &fi, furi_string_get_ansi(fn), 255)) {
+            if(fi.flags & FSF_DIRECTORY) continue;
+            size_t len = furi_string_size(fn);
+            size_t ext = strlen(KEY_FILE_EXT);
+            if(len > ext && strcmp(furi_string_get_cstr(fn) + len - ext, KEY_FILE_EXT) == 0) {
+                furi_string_printf(app->selected_file_path, "%s/%s", STORAGE_PATH, furi_string_get_cstr(fn));
+                submenu_add_item(app->submenu, furi_string_get_cstr(fn), idx, scene_main_menu_callback, app);
+                idx++;
             }
         }
-        furi_string_free(filename);
+        furi_string_free(fn);
         storage_dir_close(dir);
     }
-
     storage_file_free(dir);
     furi_record_close(RECORD_STORAGE);
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewSubmenu);
@@ -563,8 +436,7 @@ static void scene_file_select_on_enter(void* context) {
 static bool scene_file_select_on_event(void* context, SceneManagerEvent event) {
     BitLockerApp* app = context;
     if(event.type == SceneManagerEventTypeCustom) {
-        if(read_key_from_file(app->selected_file_path,
-               app->key_buffer, RECOVERY_KEY_LEN)) {
+        if(read_key_from_file(app->selected_file_path, app->key_buffer, RECOVERY_KEY_LEN)) {
             furi_hal_usb_set_config(&usb_hid, NULL);
             furi_delay_ms(1000);
             input_recovery_key(app);
@@ -574,133 +446,87 @@ static bool scene_file_select_on_event(void* context, SceneManagerEvent event) {
     return false;
 }
 
-static void scene_file_select_on_exit(void* context) {
-    submenu_reset(((BitLockerApp*)context)->submenu);
-}
+static void scene_file_select_on_exit(void* context) { submenu_reset(((BitLockerApp*)context)->submenu); }
 
 static void scene_input_progress_on_enter(void* context) {
     BitLockerApp* app = context;
-    uint32_t state = scene_manager_get_scene_state(
-        app->scene_manager, SceneSaveKey);
+    uint32_t state = scene_manager_get_scene_state(app->scene_manager, SceneSaveKey);
     popup_reset(app->popup);
-
     if(state == 0) {
-        popup_set_header(app->popup, "Saved!", 64, 20,
-                         AlignCenter, AlignTop);
-        popup_set_text(app->popup, "Key saved to SD card", 64, 36,
-                       AlignCenter, AlignTop);
+        popup_set_header(app->popup, "Saved!", 64, 20, AlignCenter, AlignTop);
+        popup_set_text(app->popup, "Key saved to SD card", 64, 36, AlignCenter, AlignTop);
     } else if(state == 1) {
-        popup_set_header(app->popup, "Error!", 64, 20,
-                         AlignCenter, AlignTop);
-        popup_set_text(app->popup, "Invalid key format\\nNeed 48 digits",
-                       64, 36, AlignCenter, AlignTop);
+        popup_set_header(app->popup, "Error!", 64, 20, AlignCenter, AlignTop);
+        popup_set_text(app->popup, "Invalid key format\\nNeed 48 digits", 64, 36, AlignCenter, AlignTop);
     } else {
-        popup_set_header(app->popup, "Error!", 64, 20,
-                         AlignCenter, AlignTop);
-        popup_set_text(app->popup, "Failed to save file", 64, 36,
-                       AlignCenter, AlignTop);
+        popup_set_header(app->popup, "Error!", 64, 20, AlignCenter, AlignTop);
+        popup_set_text(app->popup, "Failed to save file", 64, 36, AlignCenter, AlignTop);
     }
-
     popup_set_timeout(app->popup, 2000);
     popup_set_timeout_enabled(app->popup);
     popup_set_callback(app->popup, NULL);
     view_dispatcher_switch_to_view(app->view_dispatcher, ViewPopup);
 }
 
-static bool scene_input_progress_on_event(void* context,
-                                          SceneManagerEvent event) {
+static bool scene_input_progress_on_event(void* context, SceneManagerEvent event) {
     BitLockerApp* app = context;
     if(event.type == SceneManagerEventTypeBack) {
-        scene_manager_search_and_switch_to_previous_scene(
-            app->scene_manager, SceneMainMenu);
+        scene_manager_search_and_switch_to_previous_scene(app->scene_manager, SceneMainMenu);
         return true;
     }
     return false;
 }
 
-static void scene_input_progress_on_exit(void* context) {
-    popup_reset(((BitLockerApp*)context)->popup);
-}
-
-/* ========================= Scene Table ========================= */
+static void scene_input_progress_on_exit(void* context) { popup_reset(((BitLockerApp*)context)->popup); }
 
 static void (*const scene_on_enter_handlers[])(void*) = {
-    scene_main_menu_on_enter,
-    scene_save_key_on_enter,
-    scene_settings_on_enter,
-    scene_file_select_on_enter,
-    scene_input_progress_on_enter,
+    scene_main_menu_on_enter, scene_save_key_on_enter, scene_settings_on_enter,
+    scene_file_select_on_enter, scene_input_progress_on_enter,
 };
-
 static bool (*const scene_on_event_handlers[])(void*, SceneManagerEvent) = {
-    scene_main_menu_on_event,
-    scene_save_key_on_event,
-    scene_settings_on_event,
-    scene_file_select_on_event,
-    scene_input_progress_on_event,
+    scene_main_menu_on_event, scene_save_key_on_event, scene_settings_on_event,
+    scene_file_select_on_event, scene_input_progress_on_event,
 };
-
 static void (*const scene_on_exit_handlers[])(void*) = {
-    scene_main_menu_on_exit,
-    scene_save_key_on_exit,
-    scene_settings_on_exit,
-    scene_file_select_on_exit,
-    scene_input_progress_on_exit,
+    scene_main_menu_on_exit, scene_save_key_on_exit, scene_settings_on_exit,
+    scene_file_select_on_exit, scene_input_progress_on_exit,
 };
 
 static const SceneManagerHandlers scene_handlers = {
-    .scene = {{
-        .on_enter_handlers = scene_on_enter_handlers,
-        .on_event_handlers = scene_on_event_handlers,
-        .on_exit_handlers = scene_on_exit_handlers,
-    }},
+    .scene = {{ .on_enter_handlers = scene_on_enter_handlers,
+                .on_event_handlers = scene_on_event_handlers,
+                .on_exit_handlers = scene_on_exit_handlers }},
     .scene_num = SceneCount,
 };
 
-/* ========================= View Dispatcher ========================= */
-
-static bool view_dispatcher_custom_callback(void* context,
-                                            uint32_t custom_event) {
-    return scene_manager_handle_custom_event(
-        ((BitLockerApp*)context)->scene_manager, custom_event);
+static bool view_dispatcher_custom_callback(void* context, uint32_t custom_event) {
+    return scene_manager_handle_custom_event(((BitLockerApp*)context)->scene_manager, custom_event);
 }
-
 static bool view_dispatcher_navigation_callback(void* context) {
-    return scene_manager_handle_back_event(
-        ((BitLockerApp*)context)->scene_manager);
+    return scene_manager_handle_back_event(((BitLockerApp*)context)->scene_manager);
 }
-
-/* ========================= App Lifecycle ========================= */
 
 static BitLockerApp* app_alloc(void) {
     BitLockerApp* app = malloc(sizeof(BitLockerApp));
-
     app->scene_manager = scene_manager_alloc(&scene_handlers, app);
     app->view_dispatcher = view_dispatcher_alloc();
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
-    view_dispatcher_set_custom_event_callback(app->view_dispatcher,
-        view_dispatcher_custom_callback);
-    view_dispatcher_set_navigation_event_callback(app->view_dispatcher,
-        view_dispatcher_navigation_callback);
+    view_dispatcher_set_custom_event_callback(app->view_dispatcher, view_dispatcher_custom_callback);
+    view_dispatcher_set_navigation_event_callback(app->view_dispatcher, view_dispatcher_navigation_callback);
 
     app->submenu = submenu_alloc();
-    view_dispatcher_add_view(app->view_dispatcher, ViewSubmenu,
-        submenu_get_view(app->submenu));
+    view_dispatcher_add_view(app->view_dispatcher, ViewSubmenu, submenu_get_view(app->submenu));
     app->text_input = text_input_alloc();
-    view_dispatcher_add_view(app->view_dispatcher, ViewTextInput,
-        text_input_get_view(app->text_input));
+    view_dispatcher_add_view(app->view_dispatcher, ViewTextInput, text_input_get_view(app->text_input));
     app->popup = popup_alloc();
-    view_dispatcher_add_view(app->view_dispatcher, ViewPopup,
-        popup_get_view(app->popup));
+    view_dispatcher_add_view(app->view_dispatcher, ViewPopup, popup_get_view(app->popup));
     app->settings_list = variable_item_list_alloc();
-    view_dispatcher_add_view(app->view_dispatcher, ViewSettings,
-        variable_item_list_get_view(app->settings_list));
+    view_dispatcher_add_view(app->view_dispatcher, ViewSettings, variable_item_list_get_view(app->settings_list));
 
     memset(app->key_buffer, 0, RECOVERY_KEY_LEN);
     memset(app->selected_file_path, 0, sizeof(app->selected_file_path));
     app->input_mode = InputModeDigits;
     app->usb_connected = false;
-
     ensure_storage_dir();
     return app;
 }
@@ -719,18 +545,13 @@ static void app_free(BitLockerApp* app) {
     free(app);
 }
 
-/* ========================= Entry Point ========================= */
-
 int32_t bitlocker_key_manager_app(void* p) {
     UNUSED(p);
     BitLockerApp* app = app_alloc();
-
     Gui* gui = furi_record_open(RECORD_GUI);
-    view_dispatcher_attach_to_gui(app->view_dispatcher, gui,
-        ViewDispatcherTypeFullscreen);
+    view_dispatcher_attach_to_gui(app->view_dispatcher, gui, ViewDispatcherTypeFullscreen);
     scene_manager_next_scene(app->scene_manager, SceneMainMenu);
     view_dispatcher_run(app->view_dispatcher);
-
     view_dispatcher_detach_from_gui(app->view_dispatcher);
     furi_record_close(RECORD_GUI);
     app_free(app);
@@ -744,7 +565,7 @@ type FileId = 'main' | 'fam' | 'workflow'
 // ========================= App Component =========================
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'code' | 'install' | 'ci'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'code' | 'ci'>('overview')
   const [activeFile, setActiveFile] = useState<FileId>('main')
   const [copied, setCopied] = useState(false)
 
@@ -790,7 +611,7 @@ function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-orange-400">BitLocker Key Manager</h1>
-            <p className="text-sm text-gray-400">Flipper Zero Application — SHA Versioning</p>
+            <p className="text-sm text-gray-400">Flipper Zero — SHA Versioning via GitHub Actions</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
             <span className="px-2 py-1 bg-green-500/20 text-green-400 text-xs rounded-full border border-green-500/30">
@@ -809,7 +630,6 @@ function App() {
           {([
             { id: 'overview', label: '📋 Overview' },
             { id: 'code', label: '💻 Source Code' },
-            { id: 'install', label: '📦 Install Guide' },
             { id: 'ci', label: '⚙️ CI/CD' },
           ] as const).map((tab) => (
             <button
@@ -841,7 +661,6 @@ function App() {
             onDownloadAll={handleDownloadAll}
           />
         )}
-        {activeTab === 'install' && <InstallSection />}
         {activeTab === 'ci' && (
           <CISection
             buildYml={BUILD_YML}
@@ -854,7 +673,7 @@ function App() {
       <footer className="bg-gray-900 border-t border-gray-800 py-6 mt-12">
         <div className="max-w-6xl mx-auto px-4 text-center text-gray-500 text-sm">
           <p>Flipper Zero BitLocker Recovery Key Manager</p>
-          <p className="mt-1">Version managed by commit SHA · CI/CD via GitHub Actions</p>
+          <p className="mt-1">Build & distributed via GitHub Actions · SHA Versioning</p>
           <p className="mt-1">⚠️ Use responsibly. Only for legitimate recovery purposes.</p>
         </div>
       </footer>
@@ -871,11 +690,17 @@ function OverviewSection() {
         <h2 className="text-2xl font-bold text-orange-400 mb-4">
           🔐 BitLocker Recovery Key Manager
         </h2>
-        <p className="text-gray-300 leading-relaxed">
+        <p className="text-gray-300 leading-relaxed mb-4">
           Flipper Zero上でBitLocker回復キーを管理するアプリケーションです。
           回復キーをSDカードのtxtファイルとして保存し、必要に応じてUSB HID（BadUSB）経由で
-          自動入力できます。GitHub Actionsによる自動ビルド・リリースにも対応しています。
+          自動入力できます。
         </p>
+        <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+          <p className="text-sm text-gray-400">
+            <strong className="text-green-400">📦 ビルド・配布:</strong> GitHub Actionsによる自動ビルド。
+            コミットSHAでバージョン管理。Releasesから.fapファイルをダウンロードしてSDカードに配置するだけで使用可能。
+          </p>
+        </div>
       </div>
 
       <div className="grid md:grid-cols-3 gap-6">
@@ -922,72 +747,70 @@ function OverviewSection() {
         </div>
 
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <h3 className="text-lg font-bold text-gray-200 mb-4">BitLocker回復キー形式</h3>
-          <div className="bg-gray-800 rounded-lg p-4 font-mono text-sm">
-            <p className="text-orange-400">XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX</p>
-            <p className="text-gray-500 mt-2">48桁の数字（6グループ × 8桁）、ハイフン区切り</p>
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <div className="bg-gray-800 rounded p-3 text-center">
-              <p className="text-2xl font-bold text-orange-400">48</p>
-              <p className="text-xs text-gray-500">桁の数字</p>
+          <h3 className="text-lg font-bold text-gray-200 mb-4">📥 使い方（Actionsからダウンロード後）</h3>
+          <div className="space-y-4">
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <h4 className="font-bold text-orange-400 mb-2">1. .fapファイルをSDカードに配置</h4>
+              <p className="text-xs text-gray-400">
+                Releasesからダウンロード → <code className="bg-gray-700 px-1 rounded">/ext/apps/Tools/</code> にコピー
+              </p>
             </div>
-            <div className="bg-gray-800 rounded p-3 text-center">
-              <p className="text-2xl font-bold text-orange-400">6</p>
-              <p className="text-xs text-gray-500">グループ</p>
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <h4 className="font-bold text-orange-400 mb-2">2. キーを保存</h4>
+              <p className="text-xs text-gray-400">
+                Apps → Tools → BitLocker Key Mgr → Save Recovery Key → 48桁入力
+              </p>
             </div>
-            <div className="bg-gray-800 rounded p-3 text-center">
-              <p className="text-2xl font-bold text-orange-400">8</p>
-              <p className="text-xs text-gray-500">桁/グループ</p>
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <h4 className="font-bold text-orange-400 mb-2">3. キーを自動入力</h4>
+              <p className="text-xs text-gray-400">
+                Input Recovery Key → ファイル選択 → USB接続PCに自動入力
+              </p>
             </div>
-            <div className="bg-gray-800 rounded p-3 text-center">
-              <p className="text-2xl font-bold text-orange-400">5</p>
-              <p className="text-xs text-gray-500">ハイフン</p>
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <h4 className="font-bold text-orange-400 mb-2">4. 入力モード切替</h4>
+              <p className="text-xs text-gray-400">
+                Settings → Input Mode → Digits / F-Keys
+              </p>
             </div>
           </div>
         </div>
       </div>
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">アプリ構成（Scene-based Architecture）</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-700">
-                <th className="text-left py-2 px-3 text-gray-400">シーン</th>
-                <th className="text-left py-2 px-3 text-gray-400">説明</th>
-                <th className="text-left py-2 px-3 text-gray-400">使用モジュール</th>
-              </tr>
-            </thead>
-            <tbody className="text-gray-300">
-              <tr className="border-b border-gray-800">
-                <td className="py-2 px-3 font-mono text-orange-400">MainMenu</td>
-                <td className="py-2 px-3">メインメニュー</td>
-                <td className="py-2 px-3">Submenu</td>
-              </tr>
-              <tr className="border-b border-gray-800">
-                <td className="py-2 px-3 font-mono text-orange-400">SaveKey</td>
-                <td className="py-2 px-3">キー入力＆保存</td>
-                <td className="py-2 px-3">TextInput</td>
-              </tr>
-              <tr className="border-b border-gray-800">
-                <td className="py-2 px-3 font-mono text-orange-400">FileSelect</td>
-                <td className="py-2 px-3">ファイル選択</td>
-                <td className="py-2 px-3">Submenu</td>
-              </tr>
-              <tr className="border-b border-gray-800">
-                <td className="py-2 px-3 font-mono text-orange-400">Settings</td>
-                <td className="py-2 px-3">入力モード設定</td>
-                <td className="py-2 px-3">VariableItemList</td>
-              </tr>
-              <tr>
-                <td className="py-2 px-3 font-mono text-orange-400">InputProgress</td>
-                <td className="py-2 px-3">入力実行＆結果表示</td>
-                <td className="py-2 px-3">Popup</td>
-              </tr>
-            </tbody>
-          </table>
+        <h3 className="text-lg font-bold text-gray-200 mb-4">BitLocker回復キー形式</h3>
+        <div className="bg-gray-800 rounded-lg p-4 font-mono text-sm">
+          <p className="text-orange-400">XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX</p>
+          <p className="text-gray-500 mt-2">48桁の数字（6グループ × 8桁）、ハイフン区切り</p>
         </div>
+        <div className="mt-4 grid grid-cols-4 gap-3">
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-2xl font-bold text-orange-400">48</p>
+            <p className="text-xs text-gray-500">桁の数字</p>
+          </div>
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-2xl font-bold text-orange-400">6</p>
+            <p className="text-xs text-gray-500">グループ</p>
+          </div>
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-2xl font-bold text-orange-400">8</p>
+            <p className="text-xs text-gray-500">桁/グループ</p>
+          </div>
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-2xl font-bold text-orange-400">5</p>
+            <p className="text-xs text-gray-500">ハイフン</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-red-400 mb-2">⚠️ 注意事項</h3>
+        <ul className="text-sm text-gray-300 space-y-2">
+          <li>• このアプリは<strong>合法的なBitLocker回復目的</strong>のみで使用してください</li>
+          <li>• 回復キーは<strong>厳重に管理</strong>してください</li>
+          <li>• SDカード上のファイルは暗号化されていないため、取り扱いに注意</li>
+          <li>• 他人のコンピュータへの不正アクセスには使用しないでください</li>
+        </ul>
       </div>
     </div>
   )
@@ -1101,129 +924,6 @@ function getLineColor(line: string): string {
   return ''
 }
 
-// ========================= Install Section =========================
-
-function InstallSection() {
-  return (
-    <div className="space-y-8">
-      <div className="bg-gradient-to-br from-green-500/10 to-green-600/5 border border-green-500/20 rounded-xl p-8">
-        <h2 className="text-2xl font-bold text-green-400 mb-4">📦 インストールガイド</h2>
-        <p className="text-gray-300">
-          以下の手順でFlipper Zeroにアプリをビルド・インストールできます。
-          GitHub Actionsでの自動ビルドにも対応しています。
-        </p>
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">前提条件</h3>
-        <ul className="space-y-3 text-gray-300">
-          <li className="flex items-start gap-3">
-            <span className="text-orange-400 mt-1">▸</span>
-            <div>
-              <strong>uFBT</strong> (micro Flipper Build Tool) のインストール
-              <p className="text-sm text-gray-500 mt-1">
-                <code className="bg-gray-800 px-2 py-1 rounded text-orange-300">pip install ufbt</code>
-              </p>
-            </div>
-          </li>
-          <li className="flex items-start gap-3">
-            <span className="text-orange-400 mt-1">▸</span>
-            <div><strong>Flipper Zero</strong> 本体 + USBケーブル</div>
-          </li>
-          <li className="flex items-start gap-3">
-            <span className="text-orange-400 mt-1">▸</span>
-            <div><strong>Visual Studio Code</strong>（推奨）</div>
-          </li>
-        </ul>
-      </div>
-
-      <div className="space-y-6">
-        <StepCard step={1} title="プロジェクトフォルダの作成" code={`mkdir bitlocker_key_manager\ncd bitlocker_key_manager`} />
-        <StepCard step={2} title="ソースファイルの配置" code={`# 以下のファイルを配置:\n# - application.fam\n# - bitlocker_key_manager.c\n# - icon.png (10x10, 1bit color)`} />
-        <StepCard step={3} title="VS Codeの設定" code={`ufbt vscode_dist`} />
-        <StepCard step={4} title="ビルド" code={`ufbt`} />
-        <StepCard step={5} title="Flipper Zeroに転送＆実行" code={`# Flipper ZeroをUSB接続して:\nufbt launch\n\n# または手動で:\n# qFlipper > File Manager > SD Card > apps > Tools\n# に .fap ファイルをコピー`} />
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">ファイル構成</h3>
-        <pre className="bg-gray-800 rounded-lg p-4 text-sm font-mono text-gray-300">
-{`bitlocker_key_manager/
-├── application.fam              # アプリマニフェスト
-├── bitlocker_key_manager.c      # メインソースコード
-├── icon.png                     # アプリアイコン (10x10px)
-├── .github/
-│   └── workflows/
-│       └── build.yml            # GitHub Actions CI/CD
-├── images/
-│   └── .gitkeep
-└── .github/
-    └── workflows/
-        └── build.yml`}
-        </pre>
-      </div>
-
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">使い方</h3>
-        <div className="space-y-4">
-          <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h4 className="font-bold text-orange-400 mb-2">1. キーを保存する</h4>
-            <ol className="text-sm text-gray-300 space-y-1 list-decimal list-inside">
-              <li>アプリを起動 → 「Save Recovery Key」を選択</li>
-              <li>48桁の回復キーを入力（ハイフン区切り）</li>
-              <li>SDカードの <code className="bg-gray-700 px-1 rounded">/ext/bitlocker_keys/</code> に保存</li>
-            </ol>
-          </div>
-          <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h4 className="font-bold text-orange-400 mb-2">2. キーを自動入力する</h4>
-            <ol className="text-sm text-gray-300 space-y-1 list-decimal list-inside">
-              <li>アプリを起動 → 「Input Recovery Key」を選択</li>
-              <li>保存したキーファイルを選択</li>
-              <li>Flipper ZeroをUSB接続したPCがキーボードとして認識</li>
-              <li>自動で回復キーが入力される</li>
-            </ol>
-          </div>
-          <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h4 className="font-bold text-orange-400 mb-2">3. 入力モード切替</h4>
-            <ol className="text-sm text-gray-300 space-y-1 list-decimal list-inside">
-              <li>アプリを起動 → 「Settings」を選択</li>
-              <li>「Input Mode」でモード切替</li>
-              <li><strong>Digits</strong>: 数字キーで入力（通常）</li>
-              <li><strong>F-Keys</strong>: ファンクションキーで入力（特殊環境用）</li>
-            </ol>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-red-400 mb-2">⚠️ 注意事項</h3>
-        <ul className="text-sm text-gray-300 space-y-2">
-          <li>• このアプリは<strong>合法的なBitLocker回復目的</strong>のみで使用してください</li>
-          <li>• 回復キーは<strong>厳重に管理</strong>してください</li>
-          <li>• SDカード上のファイルは暗号化されていないため、取り扱いに注意</li>
-          <li>• 他人のコンピュータへの不正アクセスには使用しないでください</li>
-        </ul>
-      </div>
-    </div>
-  )
-}
-
-function StepCard({ step, title, code }: { step: number; title: string; code: string }) {
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-      <div className="flex items-center gap-3 mb-3">
-        <div className="w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center text-sm font-bold text-gray-900">
-          {step}
-        </div>
-        <h4 className="font-bold text-gray-200">{title}</h4>
-      </div>
-      <pre className="bg-gray-800 rounded-lg p-3 text-sm font-mono text-gray-300 overflow-x-auto">
-        <code>{code}</code>
-      </pre>
-    </div>
-  )
-}
-
 // ========================= CI/CD Section =========================
 
 function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f: string, c: string) => void }) {
@@ -1239,14 +939,14 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
     <div className="space-y-8">
       {/* Hero */}
       <div className="bg-gradient-to-br from-blue-500/10 to-purple-600/5 border border-blue-500/20 rounded-xl p-8">
-        <h2 className="text-2xl font-bold text-blue-400 mb-4">⚙️ GitHub Actions CI/CD</h2>
+        <h2 className="text-2xl font-bold text-blue-400 mb-4">⚙️ GitHub Actions — 自動ビルド & 配布</h2>
         <p className="text-gray-300 leading-relaxed">
-          GitHub Actionsを使用して、プッシュやプルリクエスト時に自動的にFlipper Zeroアプリをビルドします。
-          dev/releaseの両チャンネルに対応し、自動リリースも可能です。
+          GitHub Actionsのみでビルド・配布を完結。プッシュするだけで自動的にFlipper Zero用.fapファイルがビルドされ、
+          Releasesからダウンロード可能。バージョンはコミットSHAで管理。
         </p>
       </div>
 
-      {/* Pipeline Overview */}
+      {/* Pipeline */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
         <h3 className="text-lg font-bold text-gray-200 mb-6">ビルドパイプライン</h3>
         <div className="flex flex-col md:flex-row items-center gap-4">
@@ -1258,78 +958,14 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
           <Arrow />
           <PipelineStep icon="🔍" label="Lint" sublabel="clang-format" color="yellow" />
           <Arrow />
-          <PipelineStep icon="🚀" label="Release" sublabel="auto tag + upload" color="green" />
+          <PipelineStep icon="🚀" label="Release" sublabel="SHA tag + .fap" color="green" />
         </div>
       </div>
 
-      {/* Trigger Events */}
-      <div className="grid md:grid-cols-2 gap-6">
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <h3 className="text-lg font-bold text-gray-200 mb-4">🎯 トリガーイベント</h3>
-          <ul className="space-y-3 text-sm text-gray-300">
-            <li className="flex items-start gap-2">
-              <span className="text-blue-400">●</span>
-              <div>
-                <strong>push</strong> — main/masterブランチへのプッシュ時
-              </div>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-blue-400">●</span>
-              <div>
-                <strong>pull_request</strong> — PR作成・更新時
-              </div>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-blue-400">●</span>
-              <div>
-                <strong>schedule</strong> — 毎日01:00 UTCに自動ビルド
-              </div>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-blue-400">●</span>
-              <div>
-                <strong>workflow_dispatch</strong> — 手動実行も可能
-              </div>
-            </li>
-          </ul>
-        </div>
-
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <h3 className="text-lg font-bold text-gray-200 mb-4">📦 ビルドターゲット</h3>
-          <div className="space-y-4">
-            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="w-3 h-3 bg-orange-500 rounded-full"></span>
-                <strong className="text-orange-400">dev channel</strong>
-              </div>
-              <p className="text-xs text-gray-400">最新開発ファームウェア用（unleashed等）</p>
-            </div>
-            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="w-3 h-3 bg-green-500 rounded-full"></span>
-                <strong className="text-green-400">release channel</strong>
-              </div>
-              <p className="text-xs text-gray-400">公式リリースファームウェア用</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Release Info */}
+      {/* SHA Versioning */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">🚀 自動リリース（SHAバージョニング）</h3>
-        <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700 mb-4">
-          <p className="text-sm text-gray-300">
-            main/masterブランチへのpush時に、ビルド＆リント成功後自動的にGitHub Releaseを作成します。
-            バージョンは<strong className="text-orange-400">コミットSHA</strong>で管理され、
-            <code className="bg-gray-700 px-1.5 py-0.5 rounded text-xs mx-1">fap_version</code>
-            もビルド時にSHAへ動的書き換えされます。
-          </p>
-        </div>
-
-        {/* SHA Versioning Flow */}
+        <h3 className="text-lg font-bold text-gray-200 mb-4">🏷️ SHAバージョニング</h3>
         <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700 mb-4">
-          <h4 className="text-sm font-bold text-blue-400 mb-3">📐 SHAバージョニングの流れ</h4>
           <div className="flex flex-col md:flex-row items-center gap-3 text-xs">
             <div className="bg-gray-800 rounded px-3 py-2 border border-gray-600">
               <p className="text-gray-500">application.fam</p>
@@ -1352,64 +988,66 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
             </div>
           </div>
         </div>
-
         <div className="grid md:grid-cols-3 gap-4">
           <div className="bg-gray-800 rounded-lg p-4 text-center">
             <p className="text-2xl mb-1">🏷️</p>
             <p className="text-sm font-bold text-gray-200">SHAタグ</p>
-            <p className="text-xs text-gray-500 mt-1">
-              タグ名 = <code className="text-orange-300">a1b2c3d</code><br />
-              コミットのショートSHA（7桁）
-            </p>
+            <p className="text-xs text-gray-500 mt-1">タグ名 = コミットのショートSHA（7桁）</p>
           </div>
           <div className="bg-gray-800 rounded-lg p-4 text-center">
             <p className="text-2xl mb-1">🔄</p>
             <p className="text-sm font-bold text-gray-200">動的バージョン</p>
-            <p className="text-xs text-gray-500 mt-1">
-              <code className="text-orange-300">sed</code>でFAMのバージョンを<br />
-              ビルド時にSHAへ書き換え
-            </p>
+            <p className="text-xs text-gray-500 mt-1">sedでFAMのバージョンをSHAに書き換え</p>
           </div>
           <div className="bg-gray-800 rounded-lg p-4 text-center">
             <p className="text-2xl mb-1">📎</p>
             <p className="text-sm font-bold text-gray-200">SHA付きバイナリ</p>
-            <p className="text-xs text-gray-500 mt-1">
-              アーティファクト名にSHAを含む<br />
-              <code className="text-orange-300">...-a1b2c3d-dev.fap</code>
-            </p>
+            <p className="text-xs text-gray-500 mt-1">アーティファクト名にSHAを含む</p>
           </div>
         </div>
       </div>
 
-      {/* application.fam */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">📄 application.fam（バージョン設定）</h3>
-        <p className="text-sm text-gray-400 mb-4">
-          <code className="bg-gray-800 px-2 py-0.5 rounded text-orange-300">fap_version</code>
-          はプレースホルダーの <code className="bg-gray-800 px-2 py-0.5 rounded text-yellow-300">"0.0.0"</code> を設定。
-          CIビルド時に <code className="bg-gray-800 px-2 py-0.5 rounded text-blue-300">sed</code> でコミットSHAに置換されます。
-        </p>
-        <div className="bg-gray-800 rounded-lg p-4 font-mono text-sm">
-          <div className="flex">
-            <span className="text-gray-500 select-none mr-4">1</span>
-            <span className="text-gray-300">App(</span>
-          </div>
-          <div className="flex">
-            <span className="text-gray-500 select-none mr-4">2</span>
-            <span className="text-gray-300">{"    "}appid=<span className="text-green-400">"bitlocker_key_manager"</span>,</span>
-          </div>
-          <div className="flex">
-            <span className="text-gray-500 select-none mr-4">3</span>
-            <span className="text-gray-300">{"    "}name=<span className="text-green-400">"BitLocker Key Mgr"</span>,</span>
-          </div>
-          <div className="flex">
-            <span className="text-gray-500 select-none mr-4">4</span>
-            <span className="text-gray-300">{"    "}<span className="text-yellow-400 bg-yellow-400/10 px-1 rounded">fap_version=<span className="text-orange-400">"0.0.0"</span></span>,{"  "}</span>
-            <span className="text-gray-600 ml-2">← CIでSHAに置換</span>
-          </div>
-          <div className="flex">
-            <span className="text-gray-500 select-none mr-4">5</span>
-            <span className="text-gray-300">{"    "}... )</span>
+      {/* Triggers */}
+      <div className="grid md:grid-cols-2 gap-6">
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 className="text-lg font-bold text-gray-200 mb-4">🎯 トリガー</h3>
+          <ul className="space-y-3 text-sm text-gray-300">
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400">●</span>
+              <div><strong>push</strong> — main/masterブランチ</div>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400">●</span>
+              <div><strong>pull_request</strong> — PR作成・更新</div>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400">●</span>
+              <div><strong>schedule</strong> — 毎日01:00 UTC</div>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400">●</span>
+              <div><strong>workflow_dispatch</strong> — 手動実行</div>
+            </li>
+          </ul>
+        </div>
+
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 className="text-lg font-bold text-gray-200 mb-4">📦 ビルドターゲット</h3>
+          <div className="space-y-4">
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="w-3 h-3 bg-orange-500 rounded-full"></span>
+                <strong className="text-orange-400">dev channel</strong>
+              </div>
+              <p className="text-xs text-gray-400">最新開発ファームウェア用</p>
+            </div>
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="w-3 h-3 bg-green-500 rounded-full"></span>
+                <strong className="text-green-400">release channel</strong>
+              </div>
+              <p className="text-xs text-gray-400">公式リリースファームウェア用</p>
+            </div>
           </div>
         </div>
       </div>
@@ -1449,77 +1087,51 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
         </div>
       </div>
 
-      {/* Setup Steps */}
+      {/* Setup */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">🛠️ セットアップ手順</h3>
+        <h3 className="text-lg font-bold text-gray-200 mb-4">🛠️ セットアップ</h3>
         <div className="space-y-4">
           <div className="flex items-start gap-3">
             <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">1</div>
             <div>
-              <p className="text-sm font-bold text-gray-200">GitHubリポジトリを作成</p>
-              <p className="text-xs text-gray-500 mt-1">
-                すべてのソースファイルをコミット。<code className="bg-gray-800 px-1 rounded text-orange-300">application.fam</code>の
-                <code className="bg-gray-800 px-1 rounded text-yellow-300 ml-1">fap_version</code>は
-                <code className="bg-gray-800 px-1 rounded text-yellow-300 ml-1">"0.0.0"</code>（プレースホルダー）のままOK。
-              </p>
+              <p className="text-sm font-bold text-gray-200">リポジトリに全ファイルをコミット</p>
+              <pre className="text-xs text-gray-400 mt-1 bg-gray-800 px-2 py-1 rounded">
+                <code>{"bitlocker_key_manager.c\napplication.fam\n.github/workflows/build.yml\nicon.png"}</code>
+              </pre>
             </div>
           </div>
           <div className="flex items-start gap-3">
             <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">2</div>
             <div>
-              <p className="text-sm font-bold text-gray-200">ワークフローファイルを配置</p>
-              <pre className="text-xs text-gray-400 mt-1 bg-gray-800 px-2 py-1 rounded">
-                <code>mkdir -p .github/workflows{"\n"}cp build.yml .github/workflows/build.yml</code>
-              </pre>
+              <p className="text-sm font-bold text-gray-200">push → 自動ビルド開始</p>
+              <p className="text-xs text-gray-500 mt-1">
+                Actionsが自動で.fapをビルドし、main/masterならSHAタグのReleaseも作成
+              </p>
             </div>
           </div>
           <div className="flex items-start gap-3">
             <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">3</div>
             <div>
-              <p className="text-sm font-bold text-gray-200">プッシュして自動ビルド開始</p>
-              <pre className="text-xs text-gray-400 mt-1 bg-gray-800 px-2 py-1 rounded">
-                <code>git add .{"\n"}git commit -m "Initial commit with CI/CD"{"\n"}git push origin main</code>
-              </pre>
-              <p className="text-xs text-gray-500 mt-2">
-                → CIが自動で <code className="bg-gray-800 px-1 rounded text-blue-300">fap_version</code> を
-                コミットSHA（例: <code className="bg-gray-800 px-1 rounded text-blue-300">a1b2c3d</code>）に書き換え
-              </p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">4</div>
-            <div>
-              <p className="text-sm font-bold text-gray-200">Actionsタブでビルド状況を確認</p>
-              <p className="text-xs text-gray-500 mt-1">
-                成功するとArtifactsから.fapファイルをダウンロード可能。mainブランチへのpushで
-                <strong className="text-orange-400">SHAタグ</strong>の自動リリースが作成されます。
-              </p>
+              <p className="text-sm font-bold text-gray-200">Releasesから.fapをダウンロード</p>
               <div className="mt-2 bg-gray-800 rounded p-2 font-mono text-xs">
                 <p className="text-gray-500"># Release例:</p>
                 <p className="text-green-400">Tag: a1b2c3d</p>
-                <p className="text-green-400">Name: "Build a1b2c3d"</p>
                 <p className="text-gray-500"># Artifacts:</p>
                 <p className="text-orange-400">bitlocker_key_manager-a1b2c3d-dev.fap</p>
                 <p className="text-orange-400">bitlocker_key_manager-a1b2c3d-release.fap</p>
               </div>
             </div>
           </div>
+          <div className="flex items-start gap-3">
+            <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">4</div>
+            <div>
+              <p className="text-sm font-bold text-gray-200">SDカードに配置して完了</p>
+              <p className="text-xs text-gray-500 mt-1">
+                <code className="bg-gray-800 px-1 rounded">/ext/apps/Tools/</code> にコピー → Flipperで起動
+              </p>
+            </div>
+          </div>
         </div>
-      </div>
-
-      {/* Badge Examples */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">🏅 READMEバッジ例</h3>
-        <p className="text-sm text-gray-400 mb-4">README.mdに以下のバッジを追加できます（SHAバージョニング対応）：</p>
-        <div className="bg-gray-800 rounded-lg p-4">
-          <pre className="text-xs font-mono text-gray-300">
-{`[![Build](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/build.yml/badge.svg)](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/build.yml)
-[![Latest Build](https://img.shields.io/github/v/tag/YOUR_USERNAME/YOUR_REPO?label=build&color=orange)](https://github.com/YOUR_USERNAME/YOUR_REPO/releases)`}
-          </pre>
-        </div>
-        <p className="text-xs text-gray-500 mt-3">
-          ※ タグがSHAのため、<code className="bg-gray-700 px-1 rounded">github/v/tag</code>バッジで最新のSHAビルドを表示
-        </p>
       </div>
     </div>
   )
@@ -1548,7 +1160,7 @@ function Arrow() {
 function getYamlLineColor(line: string): string {
   const trimmed = line.trim()
   if (trimmed.startsWith('#')) return 'text-green-600'
-  if (trimmed.startsWith('name:') || trimmed.startsWith('on:') || trimmed.startsWith('jobs:') || trimmed.startsWith('permissions:')) return 'text-blue-400'
+  if (trimmed.startsWith('name:') || trimmed.startsWith('on:') || trimmed.startsWith('jobs:') || trimmed.startsWith('permissions:') || trimmed.startsWith('env:')) return 'text-blue-400'
   if (trimmed.startsWith('- name:') || trimmed.startsWith('- cron:')) return 'text-yellow-400'
   if (trimmed.includes('uses:')) return 'text-purple-400'
   if (trimmed.includes('${{')) return 'text-orange-400'
