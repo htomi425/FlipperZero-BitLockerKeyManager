@@ -14,7 +14,7 @@ const APPLICATION_FAM = `App(
     fap_description="Save and auto-input BitLocker recovery keys via USB HID",
     fap_author="FlipperDev",
     fap_weburl="",
-    fap_version="1.0.0",
+    fap_version="0.0.0",
 )`
 
 const BUILD_YML = `name: "FAP: Build for multiple SDK sources"
@@ -29,6 +29,9 @@ on:
     # Daily build at 01:00 UTC
     - cron: "0 1 * * *"
   workflow_dispatch:
+
+env:
+  SHORT_SHA: \${{ github.sha }}
 
 jobs:
   ufbt-build:
@@ -45,6 +48,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set version from SHA
+        run: |
+          SHORT_SHA=$(echo "\${{ github.sha }}" | cut -c1-7)
+          echo "SHORT_SHA=\${SHORT_SHA}" >> \$GITHUB_ENV
+          # Rewrite fap_version in application.fam to use commit SHA
+          sed -i "s/fap_version=\\"[^\\"]*\\"/fap_version=\\"\${SHORT_SHA}\\"/" application.fam
+          echo "Updated fap_version to: \${SHORT_SHA}"
+          grep fap_version application.fam
+
       - name: Build with ufbt
         uses: flipperdevices/flipperzero-ufbt-action@v0.1
         id: build-app
@@ -54,7 +66,7 @@ jobs:
       - name: Upload app artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bitlocker_key_manager-\${{ steps.build-app.outputs.suffix }}
+          name: bitlocker_key_manager-\${{ env.SHORT_SHA }}-\${{ matrix.sdk-channel }}
           path: \${{ steps.build-app.outputs.fap-artifacts }}
           if-no-files-found: error
           retention-days: 30
@@ -92,39 +104,47 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set short SHA
+        run: |
+          SHORT_SHA=$(echo "\${{ github.sha }}" | cut -c1-7)
+          echo "SHORT_SHA=\${SHORT_SHA}" >> \$GITHUB_ENV
+          echo "Release version: \${SHORT_SHA}"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
 
-      - name: Get version from FAM
-        id: version
+      - name: List artifacts
         run: |
-          VERSION=$(grep -oP 'fap_version="\\K[^"]+' application.fam)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Found version: $VERSION"
+          echo "Downloaded artifacts:"
+          find artifacts/ -type f -name "*.fap" -o -name "*.fal" | sort
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v\${{ steps.version.outputs.version }}
-          name: "BitLocker Key Manager v\${{ steps.version.outputs.version }}"
+          tag_name: \${{ env.SHORT_SHA }}
+          name: "Build \${{ env.SHORT_SHA }}"
           body: |
-            ## BitLocker Recovery Key Manager v\${{ steps.version.outputs.version }}
-            
+            ## BitLocker Key Manager — Build \${{ env.SHORT_SHA }}
+
             ### Build Info
-            - **Commit:** \${{ github.sha }}
-            - **Branch:** \${{ github.ref_name }}
-            - **Date:** \${{ github.event.head_commit.timestamp }}
-            
+            | Field | Value |
+            |-------|-------|
+            | **Commit** | \`\${{ github.sha }}\` |
+            | **Short SHA** | \`\${{ env.SHORT_SHA }}\` |
+            | **Branch** | \`\${{ github.ref_name }}\` |
+            | **Triggered by** | \`\${{ github.actor }}\` |
+            | **Date** | \${{ github.event.head_commit.timestamp }} |
+
             ### Installation
             1. Download the .fap file matching your firmware version
-            2. Copy to your Flipper Zero SD card: /ext/apps/Tools/
+            2. Copy to Flipper Zero SD card: /ext/apps/Tools/
             3. Launch from Apps → Tools → BitLocker Key Mgr
-            
+
             ### Files
-            - *-dev-*.fap — Built for dev/unleashed firmware
-            - *-release-*.fap — Built for official release firmware
+            - *-dev.fap — Built for dev/unleashed firmware
+            - *-release.fap — Built for official release firmware
           files: artifacts/**/*.fap
           draft: false
           prerelease: false
@@ -770,14 +790,14 @@ function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-orange-400">BitLocker Key Manager</h1>
-            <p className="text-sm text-gray-400">Flipper Zero Application v1.0.0</p>
+            <p className="text-sm text-gray-400">Flipper Zero Application — SHA Versioning</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
             <span className="px-2 py-1 bg-green-500/20 text-green-400 text-xs rounded-full border border-green-500/30">
               ● CI/CD Ready
             </span>
-            <span className="px-2 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-full border border-blue-500/30">
-              v1.0.0
+            <span className="px-2 py-1 bg-orange-500/20 text-orange-400 text-xs rounded-full border border-orange-500/30 font-mono">
+              SHA Versioning
             </span>
           </div>
         </div>
@@ -834,6 +854,7 @@ function App() {
       <footer className="bg-gray-900 border-t border-gray-800 py-6 mt-12">
         <div className="max-w-6xl mx-auto px-4 text-center text-gray-500 text-sm">
           <p>Flipper Zero BitLocker Recovery Key Manager</p>
+          <p className="mt-1">Version managed by commit SHA · CI/CD via GitHub Actions</p>
           <p className="mt-1">⚠️ Use responsibly. Only for legitimate recovery purposes.</p>
         </div>
       </footer>
@@ -1296,27 +1317,99 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
 
       {/* Release Info */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">🚀 自動リリース</h3>
+        <h3 className="text-lg font-bold text-gray-200 mb-4">🚀 自動リリース（SHAバージョニング）</h3>
         <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700 mb-4">
           <p className="text-sm text-gray-300">
             main/masterブランチへのpush時に、ビルド＆リント成功後自動的にGitHub Releaseを作成します。
+            バージョンは<strong className="text-orange-400">コミットSHA</strong>で管理され、
+            <code className="bg-gray-700 px-1.5 py-0.5 rounded text-xs mx-1">fap_version</code>
+            もビルド時にSHAへ動的書き換えされます。
           </p>
         </div>
+
+        {/* SHA Versioning Flow */}
+        <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700 mb-4">
+          <h4 className="text-sm font-bold text-blue-400 mb-3">📐 SHAバージョニングの流れ</h4>
+          <div className="flex flex-col md:flex-row items-center gap-3 text-xs">
+            <div className="bg-gray-800 rounded px-3 py-2 border border-gray-600">
+              <p className="text-gray-500">application.fam</p>
+              <p className="font-mono text-yellow-400">fap_version="0.0.0"</p>
+            </div>
+            <span className="text-gray-500">→</span>
+            <div className="bg-gray-800 rounded px-3 py-2 border border-blue-500/50">
+              <p className="text-gray-500">CI: sed で置換</p>
+              <p className="font-mono text-blue-400">fap_version="a1b2c3d"</p>
+            </div>
+            <span className="text-gray-500">→</span>
+            <div className="bg-gray-800 rounded px-3 py-2 border border-green-500/50">
+              <p className="text-gray-500">Release Tag</p>
+              <p className="font-mono text-green-400">a1b2c3d</p>
+            </div>
+            <span className="text-gray-500">→</span>
+            <div className="bg-gray-800 rounded px-3 py-2 border border-orange-500/50">
+              <p className="text-gray-500">Artifact</p>
+              <p className="font-mono text-orange-400">...-a1b2c3d-dev.fap</p>
+            </div>
+          </div>
+        </div>
+
         <div className="grid md:grid-cols-3 gap-4">
           <div className="bg-gray-800 rounded-lg p-4 text-center">
             <p className="text-2xl mb-1">🏷️</p>
-            <p className="text-sm font-bold text-gray-200">自動タグ</p>
-            <p className="text-xs text-gray-500 mt-1">application.famのバージョンから自動生成</p>
+            <p className="text-sm font-bold text-gray-200">SHAタグ</p>
+            <p className="text-xs text-gray-500 mt-1">
+              タグ名 = <code className="text-orange-300">a1b2c3d</code><br />
+              コミットのショートSHA（7桁）
+            </p>
           </div>
           <div className="bg-gray-800 rounded-lg p-4 text-center">
-            <p className="text-2xl mb-1">📝</p>
-            <p className="text-sm font-bold text-gray-200">リリースノート</p>
-            <p className="text-xs text-gray-500 mt-1">コミット情報・ビルド情報を自動記載</p>
+            <p className="text-2xl mb-1">🔄</p>
+            <p className="text-sm font-bold text-gray-200">動的バージョン</p>
+            <p className="text-xs text-gray-500 mt-1">
+              <code className="text-orange-300">sed</code>でFAMのバージョンを<br />
+              ビルド時にSHAへ書き換え
+            </p>
           </div>
           <div className="bg-gray-800 rounded-lg p-4 text-center">
             <p className="text-2xl mb-1">📎</p>
-            <p className="text-sm font-bold text-gray-200">バイナリ添付</p>
-            <p className="text-xs text-gray-500 mt-1">全ビルドの.fapファイルを自動アップロード</p>
+            <p className="text-sm font-bold text-gray-200">SHA付きバイナリ</p>
+            <p className="text-xs text-gray-500 mt-1">
+              アーティファクト名にSHAを含む<br />
+              <code className="text-orange-300">...-a1b2c3d-dev.fap</code>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* application.fam */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-gray-200 mb-4">📄 application.fam（バージョン設定）</h3>
+        <p className="text-sm text-gray-400 mb-4">
+          <code className="bg-gray-800 px-2 py-0.5 rounded text-orange-300">fap_version</code>
+          はプレースホルダーの <code className="bg-gray-800 px-2 py-0.5 rounded text-yellow-300">"0.0.0"</code> を設定。
+          CIビルド時に <code className="bg-gray-800 px-2 py-0.5 rounded text-blue-300">sed</code> でコミットSHAに置換されます。
+        </p>
+        <div className="bg-gray-800 rounded-lg p-4 font-mono text-sm">
+          <div className="flex">
+            <span className="text-gray-500 select-none mr-4">1</span>
+            <span className="text-gray-300">App(</span>
+          </div>
+          <div className="flex">
+            <span className="text-gray-500 select-none mr-4">2</span>
+            <span className="text-gray-300">{"    "}appid=<span className="text-green-400">"bitlocker_key_manager"</span>,</span>
+          </div>
+          <div className="flex">
+            <span className="text-gray-500 select-none mr-4">3</span>
+            <span className="text-gray-300">{"    "}name=<span className="text-green-400">"BitLocker Key Mgr"</span>,</span>
+          </div>
+          <div className="flex">
+            <span className="text-gray-500 select-none mr-4">4</span>
+            <span className="text-gray-300">{"    "}<span className="text-yellow-400 bg-yellow-400/10 px-1 rounded">fap_version=<span className="text-orange-400">"0.0.0"</span></span>,{"  "}</span>
+            <span className="text-gray-600 ml-2">← CIでSHAに置換</span>
+          </div>
+          <div className="flex">
+            <span className="text-gray-500 select-none mr-4">5</span>
+            <span className="text-gray-300">{"    "}... )</span>
           </div>
         </div>
       </div>
@@ -1364,7 +1457,11 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
             <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">1</div>
             <div>
               <p className="text-sm font-bold text-gray-200">GitHubリポジトリを作成</p>
-              <p className="text-xs text-gray-500 mt-1">すべてのソースファイルをコミット</p>
+              <p className="text-xs text-gray-500 mt-1">
+                すべてのソースファイルをコミット。<code className="bg-gray-800 px-1 rounded text-orange-300">application.fam</code>の
+                <code className="bg-gray-800 px-1 rounded text-yellow-300 ml-1">fap_version</code>は
+                <code className="bg-gray-800 px-1 rounded text-yellow-300 ml-1">"0.0.0"</code>（プレースホルダー）のままOK。
+              </p>
             </div>
           </div>
           <div className="flex items-start gap-3">
@@ -1383,6 +1480,10 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
               <pre className="text-xs text-gray-400 mt-1 bg-gray-800 px-2 py-1 rounded">
                 <code>git add .{"\n"}git commit -m "Initial commit with CI/CD"{"\n"}git push origin main</code>
               </pre>
+              <p className="text-xs text-gray-500 mt-2">
+                → CIが自動で <code className="bg-gray-800 px-1 rounded text-blue-300">fap_version</code> を
+                コミットSHA（例: <code className="bg-gray-800 px-1 rounded text-blue-300">a1b2c3d</code>）に書き換え
+              </p>
             </div>
           </div>
           <div className="flex items-start gap-3">
@@ -1390,8 +1491,17 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
             <div>
               <p className="text-sm font-bold text-gray-200">Actionsタブでビルド状況を確認</p>
               <p className="text-xs text-gray-500 mt-1">
-                成功するとArtifactsから.fapファイルをダウンロード可能。mainブランチへのpushで自動リリースも作成されます。
+                成功するとArtifactsから.fapファイルをダウンロード可能。mainブランチへのpushで
+                <strong className="text-orange-400">SHAタグ</strong>の自動リリースが作成されます。
               </p>
+              <div className="mt-2 bg-gray-800 rounded p-2 font-mono text-xs">
+                <p className="text-gray-500"># Release例:</p>
+                <p className="text-green-400">Tag: a1b2c3d</p>
+                <p className="text-green-400">Name: "Build a1b2c3d"</p>
+                <p className="text-gray-500"># Artifacts:</p>
+                <p className="text-orange-400">bitlocker_key_manager-a1b2c3d-dev.fap</p>
+                <p className="text-orange-400">bitlocker_key_manager-a1b2c3d-release.fap</p>
+              </div>
             </div>
           </div>
         </div>
@@ -1400,13 +1510,16 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
       {/* Badge Examples */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
         <h3 className="text-lg font-bold text-gray-200 mb-4">🏅 READMEバッジ例</h3>
-        <p className="text-sm text-gray-400 mb-4">README.mdに以下のバッジを追加できます：</p>
+        <p className="text-sm text-gray-400 mb-4">README.mdに以下のバッジを追加できます（SHAバージョニング対応）：</p>
         <div className="bg-gray-800 rounded-lg p-4">
           <pre className="text-xs font-mono text-gray-300">
 {`[![Build](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/build.yml/badge.svg)](https://github.com/YOUR_USERNAME/YOUR_REPO/actions/workflows/build.yml)
-[![Release](https://img.shields.io/github/v/release/YOUR_USERNAME/YOUR_REPO)](https://github.com/YOUR_USERNAME/YOUR_REPO/releases)`}
+[![Latest Build](https://img.shields.io/github/v/tag/YOUR_USERNAME/YOUR_REPO?label=build&color=orange)](https://github.com/YOUR_USERNAME/YOUR_REPO/releases)`}
           </pre>
         </div>
+        <p className="text-xs text-gray-500 mt-3">
+          ※ タグがSHAのため、<code className="bg-gray-700 px-1 rounded">github/v/tag</code>バッジで最新のSHAビルドを表示
+        </p>
       </div>
     </div>
   )

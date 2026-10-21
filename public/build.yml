@@ -11,6 +11,9 @@ on:
     - cron: "0 1 * * *"
   workflow_dispatch:
 
+env:
+  SHORT_SHA: ${{ github.sha }}
+
 jobs:
   ufbt-build:
     runs-on: ubuntu-latest
@@ -26,6 +29,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set version from SHA
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
+          # Rewrite fap_version in application.fam to use commit SHA
+          sed -i "s/fap_version=\"[^\"]*\"/fap_version=\"${SHORT_SHA}\"/" application.fam
+          echo "Updated fap_version to: ${SHORT_SHA}"
+          grep fap_version application.fam
+
       - name: Build with ufbt
         uses: flipperdevices/flipperzero-ufbt-action@v0.1
         id: build-app
@@ -35,7 +47,7 @@ jobs:
       - name: Upload app artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bitlocker_key_manager-${{ steps.build-app.outputs.suffix }}
+          name: bitlocker_key_manager-${{ env.SHORT_SHA }}-${{ matrix.sdk-channel }}
           path: ${{ steps.build-app.outputs.fap-artifacts }}
           if-no-files-found: error
           retention-days: 30
@@ -73,39 +85,47 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set short SHA
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
+          echo "Release version: ${SHORT_SHA}"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
 
-      - name: Get version from FAM
-        id: version
+      - name: List artifacts
         run: |
-          VERSION=$(grep -oP 'fap_version="\K[^"]+' application.fam)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Found version: $VERSION"
+          echo "Downloaded artifacts:"
+          find artifacts/ -type f -name "*.fap" -o -name "*.fal" | sort
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: "BitLocker Key Manager v${{ steps.version.outputs.version }}"
+          tag_name: ${{ env.SHORT_SHA }}
+          name: "Build ${{ env.SHORT_SHA }}"
           body: |
-            ## BitLocker Recovery Key Manager v${{ steps.version.outputs.version }}
-            
+            ## BitLocker Key Manager — Build ${{ env.SHORT_SHA }}
+
             ### Build Info
-            - **Commit:** ${{ github.sha }}
-            - **Branch:** ${{ github.ref_name }}
-            - **Date:** ${{ github.event.head_commit.timestamp }}
-            
+            | Field | Value |
+            |-------|-------|
+            | **Commit** | `${{ github.sha }}` |
+            | **Short SHA** | `${{ env.SHORT_SHA }}` |
+            | **Branch** | `${{ github.ref_name }}` |
+            | **Triggered by** | `${{ github.actor }}` |
+            | **Date** | ${{ github.event.head_commit.timestamp }} |
+
             ### Installation
             1. Download the `.fap` file matching your firmware version
-            2. Copy to your Flipper Zero SD card: `/ext/apps/Tools/`
-            3. Launch from Apps → Tools → BitLocker Key Mgr
-            
+            2. Copy to Flipper Zero SD card: `/ext/apps/Tools/`
+            3. Launch from **Apps → Tools → BitLocker Key Mgr**
+
             ### Files
-            - `*-dev-*.fap` — Built for dev/unleashed firmware
-            - `*-release-*.fap` — Built for official release firmware
+            - `*-dev.fap` — Built for dev/unleashed firmware
+            - `*-release.fap` — Built for official release firmware
           files: artifacts/**/*.fap
           draft: false
           prerelease: false
