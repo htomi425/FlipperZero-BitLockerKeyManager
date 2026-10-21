@@ -10,5 +10,5 @@ App(
     fap_description="Save and auto-input BitLocker recovery keys via USB HID",
     fap_author="FlipperDev",
     fap_weburl="",
-    fap_version="0.0.0",
+    fap_version="1.0.0",
 )

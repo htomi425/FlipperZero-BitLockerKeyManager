@@ -7,12 +7,8 @@ on:
       - master
   pull_request:
   schedule:
-    # Daily build at 01:00 UTC
     - cron: "0 1 * * *"
   workflow_dispatch:
-
-env:
-  SHORT_SHA: ${{ github.sha }}
 
 jobs:
   ufbt-build:
@@ -26,28 +22,22 @@ jobs:
             sdk-channel: release
     name: 'ufbt: Build for ${{ matrix.name }}'
     steps:
+      # Pinned to SHA for supply-chain security (tag: v4.2.2)
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Set version from SHA
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
-          # Rewrite fap_version in application.fam to use commit SHA
-          sed -i "s/fap_version=\"[^\"]*\"/fap_version=\"${SHORT_SHA}\"/" application.fam
-          echo "Updated fap_version to: ${SHORT_SHA}"
-          grep fap_version application.fam
-
+      # Pinned to SHA for supply-chain security (tag: v0.1.3)
       - name: Build with ufbt
-        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        uses: flipperdevices/flipperzero-ufbt-action@ac923ebbd9c8fa1ad19c23572c89136e7151a55f
         id: build-app
         with:
           sdk-channel: ${{ matrix.sdk-channel }}
 
+      # Pinned to SHA for supply-chain security (tag: v4.6.2)
       - name: Upload app artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: bitlocker_key_manager-${{ env.SHORT_SHA }}-${{ matrix.sdk-channel }}
+          name: bitlocker_key_manager-${{ steps.build-app.outputs.suffix }}
           path: ${{ steps.build-app.outputs.fap-artifacts }}
           if-no-files-found: error
           retention-days: 30
@@ -56,18 +46,21 @@ jobs:
     runs-on: ubuntu-latest
     name: 'ufbt: Lint sources'
     steps:
+      # Pinned to SHA for supply-chain security (tag: v4.2.2)
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+      # Pinned to SHA for supply-chain security (tag: v0.1.3)
       - name: Setup ufbt
-        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        uses: flipperdevices/flipperzero-ufbt-action@ac923ebbd9c8fa1ad19c23572c89136e7151a55f
         id: setup-ufbt
         with:
           task: setup
           sdk-channel: dev
 
+      # Pinned to SHA for supply-chain security (tag: v0.1.3)
       - name: Lint sources
-        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        uses: flipperdevices/flipperzero-ufbt-action@ac923ebbd9c8fa1ad19c23572c89136e7151a55f
         with:
           skip-setup: true
           task: lint
@@ -80,40 +73,31 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Pinned to SHA for supply-chain security (tag: v4.2.2)
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
 
-      - name: Set short SHA
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
-          echo "Release version: ${SHORT_SHA}"
-
+      # Pinned to SHA for supply-chain security (tag: v4.3.0)
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: artifacts/
 
-      - name: List artifacts
-        run: |
-          echo "Downloaded artifacts:"
-          find artifacts/ -type f -name "*.fap" -o -name "*.fal" | sort
-
+      # Pinned to SHA for supply-chain security (tag: v2.3.2)
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8
         with:
-          tag_name: ${{ env.SHORT_SHA }}
-          name: "Build ${{ env.SHORT_SHA }}"
+          tag_name: v${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
           body: |
-            ## BitLocker Key Manager — Build ${{ env.SHORT_SHA }}
+            ## BitLocker Key Manager — Build #${{ github.run_number }}
 
             ### Build Info
             | Field | Value |
             |-------|-------|
             | **Commit** | `${{ github.sha }}` |
-            | **Short SHA** | `${{ env.SHORT_SHA }}` |
             | **Branch** | `${{ github.ref_name }}` |
             | **Triggered by** | `${{ github.actor }}` |
             | **Date** | ${{ github.event.head_commit.timestamp }} |

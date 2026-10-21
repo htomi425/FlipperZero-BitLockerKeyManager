@@ -14,7 +14,7 @@ const APPLICATION_FAM = `App(
     fap_description="Save and auto-input BitLocker recovery keys via USB HID",
     fap_author="FlipperDev",
     fap_weburl="",
-    fap_version="0.0.0",
+    fap_version="1.0.0",
 )`
 
 const BUILD_YML = `name: "FAP: Build for multiple SDK sources"
@@ -26,12 +26,8 @@ on:
       - master
   pull_request:
   schedule:
-    # Daily build at 01:00 UTC
     - cron: "0 1 * * *"
   workflow_dispatch:
-
-env:
-  SHORT_SHA: \${{ github.sha }}
 
 jobs:
   ufbt-build:
@@ -45,27 +41,22 @@ jobs:
             sdk-channel: release
     name: 'ufbt: Build for \${{ matrix.name }}'
     steps:
+      # Pinned to SHA for supply-chain security (tag: v4.2.2)
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Set version from SHA
-        run: |
-          SHORT_SHA=$(echo "\${{ github.sha }}" | cut -c1-7)
-          echo "SHORT_SHA=\${SHORT_SHA}" >> \$GITHUB_ENV
-          sed -i "s/fap_version=\\"[^\\"]*\\"/fap_version=\\"\${SHORT_SHA}\\"/" application.fam
-          echo "Updated fap_version to: \${SHORT_SHA}"
-          grep fap_version application.fam
-
+      # Pinned to SHA for supply-chain security (tag: v0.1.3)
       - name: Build with ufbt
-        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        uses: flipperdevices/flipperzero-ufbt-action@ac923ebbd9c8fa1ad19c23572c89136e7151a55f
         id: build-app
         with:
           sdk-channel: \${{ matrix.sdk-channel }}
 
+      # Pinned to SHA for supply-chain security (tag: v4.6.2)
       - name: Upload app artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: bitlocker_key_manager-\${{ env.SHORT_SHA }}-\${{ matrix.sdk-channel }}
+          name: bitlocker_key_manager-\${{ steps.build-app.outputs.suffix }}
           path: \${{ steps.build-app.outputs.fap-artifacts }}
           if-no-files-found: error
           retention-days: 30
@@ -74,18 +65,21 @@ jobs:
     runs-on: ubuntu-latest
     name: 'ufbt: Lint sources'
     steps:
+      # Pinned to SHA for supply-chain security (tag: v4.2.2)
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+      # Pinned to SHA for supply-chain security (tag: v0.1.3)
       - name: Setup ufbt
-        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        uses: flipperdevices/flipperzero-ufbt-action@ac923ebbd9c8fa1ad19c23572c89136e7151a55f
         id: setup-ufbt
         with:
           task: setup
           sdk-channel: dev
 
+      # Pinned to SHA for supply-chain security (tag: v0.1.3)
       - name: Lint sources
-        uses: flipperdevices/flipperzero-ufbt-action@v0.1
+        uses: flipperdevices/flipperzero-ufbt-action@ac923ebbd9c8fa1ad19c23572c89136e7151a55f
         with:
           skip-setup: true
           task: lint
@@ -98,40 +92,31 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Pinned to SHA for supply-chain security (tag: v4.2.2)
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
 
-      - name: Set short SHA
-        run: |
-          SHORT_SHA=$(echo "\${{ github.sha }}" | cut -c1-7)
-          echo "SHORT_SHA=\${SHORT_SHA}" >> \$GITHUB_ENV
-          echo "Release version: \${SHORT_SHA}"
-
+      # Pinned to SHA for supply-chain security (tag: v4.3.0)
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: artifacts/
 
-      - name: List artifacts
-        run: |
-          echo "Downloaded artifacts:"
-          find artifacts/ -type f -name "*.fap" -o -name "*.fal" | sort
-
+      # Pinned to SHA for supply-chain security (tag: v2.3.2)
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8
         with:
-          tag_name: \${{ env.SHORT_SHA }}
-          name: "Build \${{ env.SHORT_SHA }}"
+          tag_name: v\${{ github.run_number }}
+          name: "Build #\${{ github.run_number }}"
           body: |
-            ## BitLocker Key Manager — Build \${{ env.SHORT_SHA }}
+            ## BitLocker Key Manager — Build #\${{ github.run_number }}
 
             ### Build Info
             | Field | Value |
             |-------|-------|
             | **Commit** | \`\${{ github.sha }}\` |
-            | **Short SHA** | \`\${{ env.SHORT_SHA }}\` |
             | **Branch** | \`\${{ github.ref_name }}\` |
             | **Triggered by** | \`\${{ github.actor }}\` |
             | **Date** | \${{ github.event.head_commit.timestamp }} |
@@ -601,7 +586,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
-      {/* Header */}
       <header className="bg-gray-900 border-b border-orange-500/30">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-4">
           <div className="w-12 h-12 bg-orange-500 rounded-lg flex items-center justify-center shadow-lg shadow-orange-500/20">
@@ -611,20 +595,16 @@ function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-orange-400">BitLocker Key Manager</h1>
-            <p className="text-sm text-gray-400">Flipper Zero — SHA Versioning via GitHub Actions</p>
+            <p className="text-sm text-gray-400">Flipper Zero Application — CI/CD via GitHub Actions</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
             <span className="px-2 py-1 bg-green-500/20 text-green-400 text-xs rounded-full border border-green-500/30">
-              ● CI/CD Ready
-            </span>
-            <span className="px-2 py-1 bg-orange-500/20 text-orange-400 text-xs rounded-full border border-orange-500/30 font-mono">
-              SHA Versioning
+              ● SHA Pinned
             </span>
           </div>
         </div>
       </header>
 
-      {/* Navigation */}
       <nav className="bg-gray-900/50 border-b border-gray-800 sticky top-0 z-10 backdrop-blur-sm">
         <div className="max-w-6xl mx-auto px-4 flex gap-1">
           {([
@@ -647,7 +627,6 @@ function App() {
         </div>
       </nav>
 
-      {/* Content */}
       <main className="max-w-6xl mx-auto px-4 py-8">
         {activeTab === 'overview' && <OverviewSection />}
         {activeTab === 'code' && (
@@ -669,11 +648,10 @@ function App() {
         )}
       </main>
 
-      {/* Footer */}
       <footer className="bg-gray-900 border-t border-gray-800 py-6 mt-12">
         <div className="max-w-6xl mx-auto px-4 text-center text-gray-500 text-sm">
           <p>Flipper Zero BitLocker Recovery Key Manager</p>
-          <p className="mt-1">Build & distributed via GitHub Actions · SHA Versioning</p>
+          <p className="mt-1">All GitHub Actions pinned to commit SHA for supply-chain security</p>
           <p className="mt-1">⚠️ Use responsibly. Only for legitimate recovery purposes.</p>
         </div>
       </footer>
@@ -697,8 +675,9 @@ function OverviewSection() {
         </p>
         <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
           <p className="text-sm text-gray-400">
-            <strong className="text-green-400">📦 ビルド・配布:</strong> GitHub Actionsによる自動ビルド。
-            コミットSHAでバージョン管理。Releasesから.fapファイルをダウンロードしてSDカードに配置するだけで使用可能。
+            <strong className="text-green-400">🔒 セキュリティ:</strong> GitHub Actionsの全アクション参照を
+            <strong className="text-orange-400"> コミットSHAでピン留め</strong>。
+            タグ書き換え攻撃（サプライチェーン攻撃）からビルドパイプラインを保護します。
           </p>
         </div>
       </div>
@@ -747,12 +726,12 @@ function OverviewSection() {
         </div>
 
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <h3 className="text-lg font-bold text-gray-200 mb-4">📥 使い方（Actionsからダウンロード後）</h3>
+          <h3 className="text-lg font-bold text-gray-200 mb-4">📥 使い方</h3>
           <div className="space-y-4">
             <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
               <h4 className="font-bold text-orange-400 mb-2">1. .fapファイルをSDカードに配置</h4>
               <p className="text-xs text-gray-400">
-                Releasesからダウンロード → <code className="bg-gray-700 px-1 rounded">/ext/apps/Tools/</code> にコピー
+                GitHub Releasesからダウンロード → <code className="bg-gray-700 px-1 rounded">/ext/apps/Tools/</code> にコピー
               </p>
             </div>
             <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
@@ -926,6 +905,40 @@ function getLineColor(line: string): string {
 
 // ========================= CI/CD Section =========================
 
+// Action SHA mapping table
+const ACTION_SHAS = [
+  {
+    name: 'actions/checkout',
+    tag: 'v4.2.2',
+    sha: '11bd71901bbe5b1630ceea73d27597364c9af683',
+    url: 'https://github.com/actions/checkout',
+  },
+  {
+    name: 'actions/upload-artifact',
+    tag: 'v4.6.2',
+    sha: 'ea165f8d65b6e75b540449e92b4886f43607fa02',
+    url: 'https://github.com/actions/upload-artifact',
+  },
+  {
+    name: 'actions/download-artifact',
+    tag: 'v4.3.0',
+    sha: 'd3f86a106a0bac45b974a628896c90dbdf5c8093',
+    url: 'https://github.com/actions/download-artifact',
+  },
+  {
+    name: 'flipperdevices/flipperzero-ufbt-action',
+    tag: 'v0.1.3',
+    sha: 'ac923ebbd9c8fa1ad19c23572c89136e7151a55f',
+    url: 'https://github.com/flipperdevices/flipperzero-ufbt-action',
+  },
+  {
+    name: 'softprops/action-gh-release',
+    tag: 'v2.3.2',
+    sha: '72f2c25fcb47643c292f7107632f7a47c1df5cd8',
+    url: 'https://github.com/softprops/action-gh-release',
+  },
+]
+
 function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f: string, c: string) => void }) {
   const [copied, setCopied] = useState(false)
 
@@ -939,11 +952,73 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
     <div className="space-y-8">
       {/* Hero */}
       <div className="bg-gradient-to-br from-blue-500/10 to-purple-600/5 border border-blue-500/20 rounded-xl p-8">
-        <h2 className="text-2xl font-bold text-blue-400 mb-4">⚙️ GitHub Actions — 自動ビルド & 配布</h2>
+        <h2 className="text-2xl font-bold text-blue-400 mb-4">
+          🔒 GitHub Actions — SHAピン留めによるサプライチェーンセキュリティ
+        </h2>
         <p className="text-gray-300 leading-relaxed">
-          GitHub Actionsのみでビルド・配布を完結。プッシュするだけで自動的にFlipper Zero用.fapファイルがビルドされ、
-          Releasesからダウンロード可能。バージョンはコミットSHAで管理。
+          ワークフロー内のすべてのアクション参照を<strong className="text-orange-400">コミットSHAでピン留め</strong>しています。
+          タグは可変であり、メンテナによって書き換えられる可能性があるため、
+          セキュリティ観点からはSHA指定が推奨されます。
         </p>
+      </div>
+
+      {/* Why SHA pinning */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-gray-200 mb-4">🛡️ なぜSHAピン留めが必要か</h3>
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-4">
+            <h4 className="font-bold text-red-400 mb-3">❌ タグ指定（危険）</h4>
+            <pre className="bg-gray-800 rounded p-3 text-xs font-mono text-red-300 mb-3">
+{`uses: actions/checkout@v4`}
+            </pre>
+            <ul className="text-xs text-gray-400 space-y-1">
+              <li>• タグはいつでも別のコミットを指し直せる</li>
+              <li>• 2025年3月、tj-actions/changed-filesでタグ書き換え攻撃が発生</li>
+              <li>• リポジトリオーナーが侵害されるとビルドが汚染される</li>
+            </ul>
+          </div>
+          <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-4">
+            <h4 className="font-bold text-green-400 mb-3">✅ SHA指定（安全）</h4>
+            <pre className="bg-gray-800 rounded p-3 text-xs font-mono text-green-300 mb-3">
+{`uses: actions/checkout@11bd71901bbe...`}
+            </pre>
+            <ul className="text-xs text-gray-400 space-y-1">
+              <li>• SHAはイミュータブル（不変）</li>
+              <li>• 常に同じコードが実行されることを保証</li>
+              <li>• コメントで対応タグ名を併記し可読性を維持</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      {/* Pinned Actions Table */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-gray-200 mb-4">📋 ピン留め済みアクション一覧</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-700">
+                <th className="text-left py-2 px-3 text-gray-400">アクション</th>
+                <th className="text-left py-2 px-3 text-gray-400">タグ（参考）</th>
+                <th className="text-left py-2 px-3 text-gray-400">SHA（ピン留め）</th>
+              </tr>
+            </thead>
+            <tbody className="text-gray-300 font-mono text-xs">
+              {ACTION_SHAS.map((action) => (
+                <tr key={action.sha} className="border-b border-gray-800 hover:bg-gray-800/30">
+                  <td className="py-2 px-3">
+                    <a href={action.url} target="_blank" rel="noopener noreferrer"
+                       className="text-blue-400 hover:underline">
+                      {action.name}
+                    </a>
+                  </td>
+                  <td className="py-2 px-3 text-gray-500">{action.tag}</td>
+                  <td className="py-2 px-3 text-orange-400">{action.sha}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Pipeline */}
@@ -958,52 +1033,7 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
           <Arrow />
           <PipelineStep icon="🔍" label="Lint" sublabel="clang-format" color="yellow" />
           <Arrow />
-          <PipelineStep icon="🚀" label="Release" sublabel="SHA tag + .fap" color="green" />
-        </div>
-      </div>
-
-      {/* SHA Versioning */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-        <h3 className="text-lg font-bold text-gray-200 mb-4">🏷️ SHAバージョニング</h3>
-        <div className="bg-gray-800/30 rounded-lg p-4 border border-gray-700 mb-4">
-          <div className="flex flex-col md:flex-row items-center gap-3 text-xs">
-            <div className="bg-gray-800 rounded px-3 py-2 border border-gray-600">
-              <p className="text-gray-500">application.fam</p>
-              <p className="font-mono text-yellow-400">fap_version="0.0.0"</p>
-            </div>
-            <span className="text-gray-500">→</span>
-            <div className="bg-gray-800 rounded px-3 py-2 border border-blue-500/50">
-              <p className="text-gray-500">CI: sed で置換</p>
-              <p className="font-mono text-blue-400">fap_version="a1b2c3d"</p>
-            </div>
-            <span className="text-gray-500">→</span>
-            <div className="bg-gray-800 rounded px-3 py-2 border border-green-500/50">
-              <p className="text-gray-500">Release Tag</p>
-              <p className="font-mono text-green-400">a1b2c3d</p>
-            </div>
-            <span className="text-gray-500">→</span>
-            <div className="bg-gray-800 rounded px-3 py-2 border border-orange-500/50">
-              <p className="text-gray-500">Artifact</p>
-              <p className="font-mono text-orange-400">...-a1b2c3d-dev.fap</p>
-            </div>
-          </div>
-        </div>
-        <div className="grid md:grid-cols-3 gap-4">
-          <div className="bg-gray-800 rounded-lg p-4 text-center">
-            <p className="text-2xl mb-1">🏷️</p>
-            <p className="text-sm font-bold text-gray-200">SHAタグ</p>
-            <p className="text-xs text-gray-500 mt-1">タグ名 = コミットのショートSHA（7桁）</p>
-          </div>
-          <div className="bg-gray-800 rounded-lg p-4 text-center">
-            <p className="text-2xl mb-1">🔄</p>
-            <p className="text-sm font-bold text-gray-200">動的バージョン</p>
-            <p className="text-xs text-gray-500 mt-1">sedでFAMのバージョンをSHAに書き換え</p>
-          </div>
-          <div className="bg-gray-800 rounded-lg p-4 text-center">
-            <p className="text-2xl mb-1">📎</p>
-            <p className="text-sm font-bold text-gray-200">SHA付きバイナリ</p>
-            <p className="text-xs text-gray-500 mt-1">アーティファクト名にSHAを含む</p>
-          </div>
+          <PipelineStep icon="🚀" label="Release" sublabel=".fap upload" color="green" />
         </div>
       </div>
 
@@ -1075,7 +1105,9 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
           <pre className="p-4 text-sm font-mono leading-relaxed">
             <code className="text-gray-300">
               {buildYml.split('\n').map((line, i) => (
-                <div key={i} className="flex hover:bg-gray-800/50">
+                <div key={i} className={`flex hover:bg-gray-800/50 ${
+                  line.includes('Pinned to SHA') ? 'bg-green-500/5' : ''
+                }`}>
                   <span className="text-gray-600 select-none w-12 text-right pr-4 flex-shrink-0">
                     {i + 1}
                   </span>
@@ -1105,33 +1137,48 @@ function CISection({ buildYml, onDownload }: { buildYml: string; onDownload: (f:
             <div>
               <p className="text-sm font-bold text-gray-200">push → 自動ビルド開始</p>
               <p className="text-xs text-gray-500 mt-1">
-                Actionsが自動で.fapをビルドし、main/masterならSHAタグのReleaseも作成
+                Actionsが自動で.fapをビルドし、main/masterならReleaseも作成
               </p>
             </div>
           </div>
           <div className="flex items-start gap-3">
             <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">3</div>
             <div>
-              <p className="text-sm font-bold text-gray-200">Releasesから.fapをダウンロード</p>
-              <div className="mt-2 bg-gray-800 rounded p-2 font-mono text-xs">
-                <p className="text-gray-500"># Release例:</p>
-                <p className="text-green-400">Tag: a1b2c3d</p>
-                <p className="text-gray-500"># Artifacts:</p>
-                <p className="text-orange-400">bitlocker_key_manager-a1b2c3d-dev.fap</p>
-                <p className="text-orange-400">bitlocker_key_manager-a1b2c3d-release.fap</p>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5">4</div>
-            <div>
-              <p className="text-sm font-bold text-gray-200">SDカードに配置して完了</p>
+              <p className="text-sm font-bold text-gray-200">Releasesから.fapをダウンロード → SDカードに配置</p>
               <p className="text-xs text-gray-500 mt-1">
                 <code className="bg-gray-800 px-1 rounded">/ext/apps/Tools/</code> にコピー → Flipperで起動
               </p>
             </div>
           </div>
         </div>
+      </div>
+
+      {/* References */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-lg font-bold text-gray-200 mb-4">📚 参考リンク</h3>
+        <ul className="text-sm text-gray-300 space-y-2">
+          <li>
+            <a href="https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions"
+               target="_blank" rel="noopener noreferrer"
+               className="text-blue-400 hover:underline">
+              GitHub Docs: Security hardening — Using third-party actions
+            </a>
+          </li>
+          <li>
+            <a href="https://www.stepsecurity.io/blog/pinning-github-actions-for-enhanced-security-a-complete-guide"
+               target="_blank" rel="noopener noreferrer"
+               className="text-blue-400 hover:underline">
+              StepSecurity: Pinning GitHub Actions for Enhanced Security
+            </a>
+          </li>
+          <li>
+            <a href="https://github.com/flipperdevices/flipperzero-ufbt-action"
+               target="_blank" rel="noopener noreferrer"
+               className="text-blue-400 hover:underline">
+              flipperdevices/flipperzero-ufbt-action
+            </a>
+          </li>
+        </ul>
       </div>
     </div>
   )
@@ -1159,7 +1206,10 @@ function Arrow() {
 
 function getYamlLineColor(line: string): string {
   const trimmed = line.trim()
-  if (trimmed.startsWith('#')) return 'text-green-600'
+  if (trimmed.startsWith('#')) {
+    if (trimmed.includes('Pinned to SHA')) return 'text-green-400'
+    return 'text-green-600'
+  }
   if (trimmed.startsWith('name:') || trimmed.startsWith('on:') || trimmed.startsWith('jobs:') || trimmed.startsWith('permissions:') || trimmed.startsWith('env:')) return 'text-blue-400'
   if (trimmed.startsWith('- name:') || trimmed.startsWith('- cron:')) return 'text-yellow-400'
   if (trimmed.includes('uses:')) return 'text-purple-400'
